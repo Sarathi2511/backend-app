@@ -12,6 +12,8 @@ const orderItemSchema = new mongoose.Schema({
 const orderSchema = new mongoose.Schema({
   orderId: { type: String, required: true, unique: true },
   date: { type: Date, required: true },
+  scheduledFor: { type: Date, default: null }, // New field for scheduled orders
+  status: { type: String, enum: ['scheduled', 'active', 'completed'], default: 'active' }, // New status field
   customerName: { type: String, required: true },
   orderStatus: { type: String, required: true, enum: ['Pending', 'DC', 'Invoice', 'Dispatched'] },
   paymentCondition: { type: String, required: true },

@@ -13,13 +13,21 @@ router.get('/', verifyToken, async (req, res) => {
     }
 
     let orders;
+    const now = new Date();
+    const timeFilter = {
+      $or: [
+        { scheduledFor: { $exists: false } },
+        { scheduledFor: null },
+        { scheduledFor: { $lte: now } }
+      ]
+    };
     // Admin and Staff can see all orders
     if (['Admin', 'Staff'].includes(user.role)) {
-      orders = await Order.find();
+      orders = await Order.find(timeFilter);
     }
     // Executive can only see their own orders
     else if (user.role === 'Executive') {
-      orders = await Order.find({ createdBy: user.name });
+      orders = await Order.find({ createdBy: user.name, ...timeFilter });
     }
     else {
       return res.status(403).json({ message: 'Unauthorized access' });
@@ -98,17 +106,31 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    const { assignedTo, assignedToId } = req.body;
+    const { assignedTo, assignedToId, scheduledFor } = req.body;
     if (!assignedTo || !assignedToId) {
       return res.status(400).json({ message: 'Assigned To and Assigned To ID are required.' });
     }
     const orderId = await generateOrderId();
+
+    let status = 'active';
+    let date = new Date();
+    let scheduledDate = null;
+    if (scheduledFor) {
+      scheduledDate = new Date(scheduledFor);
+      if (!isNaN(scheduledDate.getTime()) && scheduledDate > new Date()) {
+        status = 'scheduled';
+        date = scheduledDate;
+      }
+    }
+
     const order = new Order({
       ...req.body,
       assignedTo,
       assignedToId,
       orderId,
-      date: new Date(),
+      date,
+      scheduledFor: scheduledDate,
+      status,
       createdBy: user.name // Ensure createdBy is set to the current user's name
     });
     const newOrder = await order.save();
