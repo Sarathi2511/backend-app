@@ -47,8 +47,58 @@ const emitProductDeleted = (productId, productName, deletedBy) => {
   });
 };
 
+// Staff events
+const emitStaffCreated = (staff, createdBy) => {
+  const io = getIO();
+  
+  // Emit to admin users only (staff management is admin-only)
+  io.to('role_admin').emit('staff:created', {
+    staff,
+    createdBy: {
+      id: createdBy.id,
+      name: createdBy.name,
+      role: createdBy.role
+    },
+    timestamp: new Date()
+  });
+};
+
+const emitStaffUpdated = (staff, updatedBy) => {
+  const io = getIO();
+  
+  // Emit to admin users only
+  io.to('role_admin').emit('staff:updated', {
+    staff,
+    updatedBy: {
+      id: updatedBy.id,
+      name: updatedBy.name,
+      role: updatedBy.role
+    },
+    timestamp: new Date()
+  });
+};
+
+const emitStaffDeleted = (staffId, staffName, deletedBy) => {
+  const io = getIO();
+  
+  // Emit to admin users only
+  io.to('role_admin').emit('staff:deleted', {
+    staffId,
+    staffName,
+    deletedBy: {
+      id: deletedBy.id,
+      name: deletedBy.name,
+      role: deletedBy.role
+    },
+    timestamp: new Date()
+  });
+};
+
 module.exports = {
   emitProductCreated,
   emitProductUpdated,
-  emitProductDeleted
+  emitProductDeleted,
+  emitStaffCreated,
+  emitStaffUpdated,
+  emitStaffDeleted
 }; 
