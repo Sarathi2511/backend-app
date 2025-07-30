@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Product = require('../models/Product');
 const { verifyToken, isAdmin, canCreateProducts, canModifyProducts } = require('../middleware/auth');
+const { emitProductCreated, emitProductUpdated, emitProductDeleted } = require('../socket/events');
 
 // Get all products
 router.get('/', verifyToken, async (req, res) => {
@@ -18,6 +19,14 @@ router.post('/', verifyToken, canCreateProducts, async (req, res) => {
   const product = new Product(req.body);
   try {
     const newProduct = await product.save();
+    
+    // Emit WebSocket event for product creation
+    emitProductCreated(newProduct, {
+      id: req.user.id,
+      name: req.user.name,
+      role: req.user.role
+    });
+    
     res.status(201).json(newProduct);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -32,6 +41,14 @@ router.put('/:id', verifyToken, canModifyProducts, async (req, res) => {
       req.body,
       { new: true }
     );
+    
+    // Emit WebSocket event for product update
+    emitProductUpdated(updatedProduct, {
+      id: req.user.id,
+      name: req.user.name,
+      role: req.user.role
+    });
+    
     res.json(updatedProduct);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -41,7 +58,24 @@ router.put('/:id', verifyToken, canModifyProducts, async (req, res) => {
 // Delete product - Admin only
 router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
   try {
+    // Get product details before deletion for WebSocket event
+    const productToDelete = await Product.findById(req.params.id);
+    
     await Product.findByIdAndDelete(req.params.id);
+    
+    // Emit WebSocket event for product deletion
+    if (productToDelete) {
+      emitProductDeleted(
+        productToDelete._id,
+        productToDelete.name,
+        {
+          id: req.user.id,
+          name: req.user.name,
+          role: req.user.role
+        }
+      );
+    }
+    
     res.json({ message: 'Product deleted successfully' });
   } catch (err) {
     res.status(500).json({ message: err.message });
