@@ -94,11 +94,61 @@ const emitStaffDeleted = (staffId, staffName, deletedBy) => {
   });
 };
 
+// Order events
+const emitOrderCreated = (order, createdBy) => {
+  const io = getIO();
+  
+  // Emit to all connected users (Admin, Staff, Executive can all see orders)
+  io.emit('order:created', {
+    order,
+    createdBy: {
+      id: createdBy.id,
+      name: createdBy.name,
+      role: createdBy.role
+    },
+    timestamp: new Date()
+  });
+};
+
+const emitOrderUpdated = (order, updatedBy) => {
+  const io = getIO();
+  
+  // Emit to all connected users
+  io.emit('order:updated', {
+    order,
+    updatedBy: {
+      id: updatedBy.id,
+      name: updatedBy.name,
+      role: updatedBy.role
+    },
+    timestamp: new Date()
+  });
+};
+
+const emitOrderDeleted = (orderId, orderName, deletedBy) => {
+  const io = getIO();
+  
+  // Emit to all connected users
+  io.emit('order:deleted', {
+    orderId,
+    orderName,
+    deletedBy: {
+      id: deletedBy.id,
+      name: deletedBy.name,
+      role: deletedBy.role
+    },
+    timestamp: new Date()
+  });
+};
+
 module.exports = {
   emitProductCreated,
   emitProductUpdated,
   emitProductDeleted,
   emitStaffCreated,
   emitStaffUpdated,
-  emitStaffDeleted
+  emitStaffDeleted,
+  emitOrderCreated,
+  emitOrderUpdated,
+  emitOrderDeleted
 }; 

@@ -3,6 +3,7 @@ const router = express.Router();
 const Order = require('../models/Order');
 const User = require('../models/User');
 const { verifyToken, isAdmin, isStaffOrAdmin, canCreateOrders, canModifyOrders } = require('../middleware/auth');
+const { emitOrderCreated, emitOrderUpdated, emitOrderDeleted } = require('../socket/events');
 
 // Get orders based on role
 router.get('/', verifyToken, async (req, res) => {
@@ -134,6 +135,14 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       createdBy: user.name // Ensure createdBy is set to the current user's name
     });
     const newOrder = await order.save();
+    
+    // Emit WebSocket event for order creation
+    emitOrderCreated(newOrder, {
+      id: req.user.id,
+      name: req.user.name,
+      role: req.user.role
+    });
+    
     res.status(201).json(newOrder);
   } catch (err) {
     console.error('Order creation failed:', err);
@@ -192,6 +201,13 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
       { new: true }
     );
 
+    // Emit WebSocket event for order update
+    emitOrderUpdated(updatedOrder, {
+      id: req.user.id,
+      name: req.user.name,
+      role: req.user.role
+    });
+
     res.json(updatedOrder);
   } catch (err) {
     console.error('Order update failed:', err);
@@ -202,10 +218,27 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
 // Delete order - Admin only
 router.delete('/by-order-id/:orderId', verifyToken, isAdmin, async (req, res) => {
   try {
+    // Get order details before deletion for WebSocket event
+    const orderToDelete = await Order.findOne({ orderId: req.params.orderId });
+    
     const order = await Order.findOneAndDelete({ orderId: req.params.orderId });
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
+    
+    // Emit WebSocket event for order deletion
+    if (orderToDelete) {
+      emitOrderDeleted(
+        orderToDelete.orderId,
+        orderToDelete.customerName || 'Order',
+        {
+          id: req.user.id,
+          name: req.user.name,
+          role: req.user.role
+        }
+      );
+    }
+    
     res.json({ message: 'Order deleted successfully' });
   } catch (err) {
     res.status(500).json({ message: err.message });
