@@ -124,6 +124,9 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       }
     }
 
+    // Check if order should be marked as isWithout (assigned to Gaurav Miniyar)
+    const isWithout = assignedToId === '688f027498b9e935ae3ca6ed';
+
     const order = new Order({
       ...req.body,
       assignedTo,
@@ -132,7 +135,8 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       date,
       scheduledFor: scheduledDate,
       status,
-      createdBy: user.name // Ensure createdBy is set to the current user's name
+      createdBy: user.name, // Ensure createdBy is set to the current user's name
+      isWithout // Set the isWithout field based on assignment
     });
     const newOrder = await order.save();
     
@@ -175,19 +179,40 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
       return res.status(403).json({ message: 'Unauthorized access' });
     }
 
-    // Validate status transition
-    if (req.body.orderStatus === 'Dispatched') {
-      // Check if delivery partner is being set in this update
-      if (!req.body.deliveryPartner) {
+    // Validate status transition - Strict workflow enforcement
+    if (req.body.orderStatus && req.body.orderStatus !== order.orderStatus) {
+      const validTransitions = {
+        'Pending': ['DC'],
+        'DC': ['Invoice'],
+        'Invoice': ['Dispatched'],
+        'Dispatched': [] // Final state, no further transitions
+      };
+
+      const currentStatus = order.orderStatus;
+      const newStatus = req.body.orderStatus;
+      const allowedNextStatuses = validTransitions[currentStatus] || [];
+
+      if (!allowedNextStatuses.includes(newStatus)) {
+        return res.status(400).json({
+          message: `Invalid status transition: Cannot change from '${currentStatus}' to '${newStatus}'. Allowed transitions: ${allowedNextStatuses.join(', ') || 'None (final state)'}`
+        });
+      }
+
+      // Additional validation for Dispatched status
+      if (newStatus === 'Dispatched' && !req.body.deliveryPartner) {
         return res.status(400).json({ 
           message: 'Cannot mark as Dispatched: Please select a delivery partner'
         });
       }
     }
 
+    // Check if order should be marked as isWithout (assigned to Gaurav Miniyar)
+    const isWithout = req.body.assignedToId === '688f027498b9e935ae3ca6ed';
+
     // Prepare update data
     const updateData = {
       ...req.body,
+      isWithout, // Set the isWithout field based on assignment
       // If status is being updated, record who did it
       ...(req.body.orderStatus !== order.orderStatus && {
         statusUpdatedBy: req.user.id,
