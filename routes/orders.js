@@ -207,7 +207,7 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
     }
 
     // Check if order should be marked as isWithout (assigned to Gaurav Miniyar)
-    const isWithout = req.body.assignedToId === '688f027498b9e935ae3ca6ed';
+    const isWithout = req.body.assignedToId === '685a4143374df5c794581187';
 
     // Prepare update data
     const updateData = {
