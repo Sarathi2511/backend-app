@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Order = require('../models/Order');
 const User = require('../models/User');
+const Customer = require('../models/Customer');
 const { verifyToken, isAdmin, isStaffOrAdmin, canCreateOrders, canModifyOrders } = require('../middleware/auth');
 const { emitOrderCreated, emitOrderUpdated, emitOrderDeleted } = require('../socket/events');
 
@@ -71,6 +72,16 @@ router.get('/assigned/:userId', verifyToken, async (req, res) => {
   try {
     const orders = await Order.find({ assignedToId: req.params.userId });
     res.json(orders);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Add this route to fetch customer names for autocomplete
+router.get('/customers', verifyToken, async (req, res) => {
+  try {
+    const customers = await Customer.find({}, 'name').sort({ name: 1 });
+    res.json(customers.map(c => c.name));
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -147,6 +158,19 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       role: req.user.role
     });
     
+    // After order is created, upsert customer name
+    if (newOrder.customerName) {
+      await Customer.findOneAndUpdate(
+        { name: newOrder.customerName },
+        {
+          name: newOrder.customerName,
+          phone: newOrder.customerPhone || '',
+          address: newOrder.customerAddress || ''
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+    }
+
     res.status(201).json(newOrder);
   } catch (err) {
     console.error('Order creation failed:', err);
