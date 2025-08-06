@@ -128,7 +128,7 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
     const isWithout = assignedToId === '685a4143374df5c794581187';
 
     const order = new Order({
-      ...req.body,
+      ...req.body, // additionalNotes will be included if present
       assignedTo,
       assignedToId,
       orderId,
@@ -211,7 +211,7 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
 
     // Prepare update data
     const updateData = {
-      ...req.body,
+      ...req.body, // additionalNotes will be included if present
       isWithout, // Set the isWithout field based on assignment
       // If status is being updated, record who did it
       ...(req.body.orderStatus !== order.orderStatus && {

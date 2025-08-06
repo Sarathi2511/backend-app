@@ -38,6 +38,7 @@ const orderSchema = new mongoose.Schema({
   }],
   orderImage: { type: String, default: null }, // Cloudinary image URL for the order
   isWithout: { type: Boolean, default: false }, // Special flag for orders assigned to Gaurav Miniyar
+  additionalNotes: { type: String, default: '' }, // Additional notes for the order
 });
 
 // Middleware to update status history
