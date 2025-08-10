@@ -3,6 +3,7 @@ const router = express.Router();
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Customer = require('../models/Customer');
+const Route = require('../models/Route');
 const { verifyToken, isAdmin, isStaffOrAdmin, canCreateOrders, canModifyOrders } = require('../middleware/auth');
 const { emitOrderCreated, emitOrderUpdated, emitOrderDeleted } = require('../socket/events');
 
@@ -87,6 +88,16 @@ router.get('/customers', verifyToken, async (req, res) => {
   }
 });
 
+// Add this route to fetch order routes for autocomplete
+router.get('/routes', verifyToken, async (req, res) => {
+  try {
+    const routes = await Route.find({}, 'name').sort({ name: 1 });
+    res.json(routes.map(r => r.name));
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // Helper function to generate order ID
 const generateOrderId = async () => {
   try {
@@ -166,6 +177,18 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
           name: newOrder.customerName,
           phone: newOrder.customerPhone || '',
           address: newOrder.customerAddress || ''
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+    }
+
+    // After order is created, upsert order route
+    if (newOrder.orderRoute) {
+      await Route.findOneAndUpdate(
+        { name: newOrder.orderRoute },
+        {
+          name: newOrder.orderRoute,
+          createdBy: req.user.id
         },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );

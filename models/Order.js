@@ -15,6 +15,7 @@ const orderSchema = new mongoose.Schema({
   scheduledFor: { type: Date, default: null }, // New field for scheduled orders
   status: { type: String, enum: ['scheduled', 'active', 'completed'], default: 'active' }, // New status field
   customerName: { type: String, required: true },
+  orderRoute: { type: String, required: true }, // New field for order route
   orderStatus: { type: String, required: true, enum: ['Pending', 'DC', 'Invoice', 'Dispatched'] },
   paymentCondition: { type: String, required: true },
   assignedTo: { type: String, required: true },
