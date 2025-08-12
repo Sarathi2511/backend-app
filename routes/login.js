@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
+const { verifyToken } = require('../middleware/auth');
 
 router.post('/', async (req, res) => {
   const { phone, password } = req.body;
@@ -31,3 +32,24 @@ router.post('/', async (req, res) => {
 });
 
 module.exports = router; 
+
+// Add token validation route
+router.get('/validate', verifyToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-password');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    return res.json({
+      success: true,
+      user: {
+        id: user._id,
+        name: user.name,
+        role: user.role,
+        phone: user.phone,
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
