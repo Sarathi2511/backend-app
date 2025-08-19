@@ -14,6 +14,20 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
+// Get distinct brand names for autocomplete
+router.get('/brands', verifyToken, async (req, res) => {
+  try {
+    const brands = await Product.distinct('brandName');
+    // Sort case-insensitively and filter out empty values
+    const sorted = brands
+      .filter(Boolean)
+      .sort((a, b) => String(a).toLowerCase().localeCompare(String(b).toLowerCase()));
+    res.json(sorted);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // Create new product - Admin, Staff, and Executive can create
 router.post('/', verifyToken, canCreateProducts, async (req, res) => {
   const product = new Product(req.body);

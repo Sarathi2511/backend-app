@@ -32,11 +32,13 @@ const loginRouter = require('./routes/login');
 const ordersRouter = require('./routes/orders');
 const productsRouter = require('./routes/products');
 const staffRouter = require('./routes/staff');
+const customersRouter = require('./routes/customers');
 
 app.use('/api/login', loginRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/products', productsRouter);
 app.use('/api/staff', staffRouter);
+app.use('/api/customers', customersRouter);
 
 // Initialize Socket.IO
 const { initializeSocket } = require('./socket');

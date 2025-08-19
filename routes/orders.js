@@ -4,6 +4,7 @@ const Order = require('../models/Order');
 const User = require('../models/User');
 const Customer = require('../models/Customer');
 const Route = require('../models/Route');
+const Product = require('../models/Product');
 const { verifyToken, isAdmin, isStaffOrAdmin, canCreateOrders, canModifyOrders } = require('../middleware/auth');
 const { emitOrderCreated, emitOrderUpdated, emitOrderDeleted } = require('../socket/events');
 
@@ -149,8 +150,21 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
     // Check if order should be marked as isWithout (assigned to Gaurav Miniyar)
     const isWithout = assignedToId === '685a4143374df5c794581187';
 
+    // Enrich order items with brandName from products
+    let enrichedItems = Array.isArray(req.body.orderItems) ? [...req.body.orderItems] : [];
+    if (enrichedItems.length > 0) {
+      const productIds = enrichedItems.map((it) => it.productId).filter(Boolean);
+      const products = await Product.find({ _id: { $in: productIds } }, 'brandName');
+      const idToBrand = new Map(products.map((p) => [String(p._id), p.brandName]));
+      enrichedItems = enrichedItems.map((it) => ({
+        ...it,
+        brandName: it.brandName || idToBrand.get(String(it.productId)) || null,
+      }));
+    }
+
     const order = new Order({
       ...req.body, // additionalNotes will be included if present
+      orderItems: enrichedItems,
       assignedTo,
       assignedToId,
       orderId,
@@ -257,7 +271,7 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
     const isWithout = req.body.assignedToId === '685a4143374df5c794581187';
 
     // Prepare update data
-    const updateData = {
+    let updateData = {
       ...req.body, // additionalNotes will be included if present
       isWithout, // Set the isWithout field based on assignment
       // If status is being updated, record who did it
@@ -266,6 +280,21 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
         statusUpdatedAt: new Date()
       })
     };
+
+    // If orderItems are present in update, enrich with brandName
+    if (Array.isArray(req.body.orderItems)) {
+      let enrichedUpdateItems = [...req.body.orderItems];
+      if (enrichedUpdateItems.length > 0) {
+        const productIds = enrichedUpdateItems.map((it) => it.productId).filter(Boolean);
+        const products = await Product.find({ _id: { $in: productIds } }, 'brandName');
+        const idToBrand = new Map(products.map((p) => [String(p._id), p.brandName]));
+        enrichedUpdateItems = enrichedUpdateItems.map((it) => ({
+          ...it,
+          brandName: it.brandName || idToBrand.get(String(it.productId)) || null,
+        }));
+      }
+      updateData.orderItems = enrichedUpdateItems;
+    }
 
     const updatedOrder = await Order.findOneAndUpdate(
       { orderId: req.params.orderId },
