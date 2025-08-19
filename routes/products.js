@@ -3,6 +3,11 @@ const router = express.Router();
 const Product = require('../models/Product');
 const { verifyToken, isAdmin, canCreateProducts, canModifyProducts } = require('../middleware/auth');
 const { emitProductCreated, emitProductUpdated, emitProductDeleted } = require('../socket/events');
+const multer = require('multer');
+const { parse } = require('csv-parse/sync');
+
+// Configure multer to store files in memory
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Get all products
 router.get('/', verifyToken, async (req, res) => {
@@ -97,3 +102,98 @@ router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
 });
 
 module.exports = router; 
+
+// CSV Import Route - Admin, Staff, and Executive can import (same as create)
+router.post('/import', verifyToken, canCreateProducts, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ message: 'CSV file is required' });
+    }
+
+    const csvString = req.file.buffer.toString('utf-8');
+
+    // Parse CSV with headers
+    let records;
+    try {
+      records = parse(csvString, {
+        columns: true,
+        skip_empty_lines: true,
+        trim: true
+      });
+    } catch (e) {
+      return res.status(400).json({ message: 'Failed to parse CSV', error: String(e.message || e) });
+    }
+
+    if (!Array.isArray(records) || records.length === 0) {
+      return res.status(400).json({ message: 'CSV has no rows' });
+    }
+
+    const results = {
+      totalRows: records.length,
+      created: 0,
+      updated: 0,
+      errors: []
+    };
+
+    // Helper to normalize keys
+    const normalizeKey = (k) => String(k || '').toLowerCase().replace(/\s+/g, '');
+
+    for (let index = 0; index < records.length; index++) {
+      const row = records[index];
+      try {
+        // Support a few alternate header spellings
+        const keyed = {};
+        for (const key of Object.keys(row)) {
+          keyed[normalizeKey(key)] = row[key];
+        }
+
+        const name = (keyed['name'] ?? row.name ?? '').toString().trim();
+        const brandName = (keyed['brandname'] ?? keyed['brand'] ?? row.brandName ?? '').toString().trim();
+        const dimension = (keyed['dimension'] ?? row.dimension ?? '').toString().trim();
+        const stockQuantityRaw = keyed['stockquantity'] ?? keyed['stock'] ?? row.stockQuantity;
+        const lowStockThresholdRaw = keyed['lowstockthreshold'] ?? keyed['threshold'] ?? row.lowStockThreshold;
+
+        if (!name || !brandName || !dimension || stockQuantityRaw === undefined || lowStockThresholdRaw === undefined) {
+          results.errors.push({ row: index + 1, message: 'Missing required fields' });
+          continue;
+        }
+
+        const stockQuantity = Number(stockQuantityRaw);
+        const lowStockThreshold = Number(lowStockThresholdRaw);
+        if (!Number.isFinite(stockQuantity) || !Number.isFinite(lowStockThreshold)) {
+          results.errors.push({ row: index + 1, message: 'Invalid number in stockQuantity or lowStockThreshold' });
+          continue;
+        }
+
+        // Upsert by (name + brandName)
+        const existing = await Product.findOne({ name, brandName });
+        if (existing) {
+          existing.dimension = dimension;
+          existing.stockQuantity = stockQuantity;
+          existing.lowStockThreshold = lowStockThreshold;
+          const updated = await existing.save();
+          results.updated += 1;
+          emitProductUpdated(updated, {
+            id: req.user.id,
+            name: req.user.name,
+            role: req.user.role
+          });
+        } else {
+          const created = await Product.create({ name, brandName, dimension, stockQuantity, lowStockThreshold });
+          results.created += 1;
+          emitProductCreated(created, {
+            id: req.user.id,
+            name: req.user.name,
+            role: req.user.role
+          });
+        }
+      } catch (rowErr) {
+        results.errors.push({ row: index + 1, message: String(rowErr.message || rowErr) });
+      }
+    }
+
+    return res.json(results);
+  } catch (err) {
+    return res.status(500).json({ message: 'Unexpected error during import', error: String(err.message || err) });
+  }
+});
