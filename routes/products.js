@@ -101,8 +101,6 @@ router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-module.exports = router; 
-
 // CSV Import Route - Admin, Staff, and Executive can import (same as create)
 router.post('/import', verifyToken, canCreateProducts, upload.single('file'), async (req, res) => {
   try {
@@ -197,3 +195,5 @@ router.post('/import', verifyToken, canCreateProducts, upload.single('file'), as
     return res.status(500).json({ message: 'Unexpected error during import', error: String(err.message || err) });
   }
 });
+
+module.exports = router;
