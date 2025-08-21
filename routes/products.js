@@ -130,7 +130,8 @@ router.post('/import', verifyToken, canCreateProducts, upload.single('file'), as
       totalRows: records.length,
       created: 0,
       updated: 0,
-      errors: []
+      errors: [],
+      warnings: []
     };
 
     // Helper to normalize keys
@@ -145,21 +146,43 @@ router.post('/import', verifyToken, canCreateProducts, upload.single('file'), as
           keyed[normalizeKey(key)] = row[key];
         }
 
-        const name = (keyed['name'] ?? row.name ?? '').toString().trim();
-        const brandName = (keyed['brandname'] ?? keyed['brand'] ?? row.brandName ?? '').toString().trim();
-        const dimension = (keyed['dimension'] ?? row.dimension ?? '').toString().trim();
-        const stockQuantityRaw = keyed['stockquantity'] ?? keyed['stock'] ?? row.stockQuantity;
-        const lowStockThresholdRaw = keyed['lowstockthreshold'] ?? keyed['threshold'] ?? row.lowStockThreshold;
+        // Extract values with defaults for missing fields
+        const originalName = (keyed['name'] ?? row.name ?? '').toString().trim();
+        const originalBrandName = (keyed['brandname'] ?? keyed['brand'] ?? row.brandName ?? '').toString().trim();
+        const originalDimension = (keyed['dimension'] ?? row.dimension ?? '').toString().trim();
+        const originalStockQuantity = keyed['stockquantity'] ?? keyed['stock'] ?? row.stockQuantity;
+        const originalLowStockThreshold = keyed['lowstockthreshold'] ?? keyed['threshold'] ?? row.lowStockThreshold;
 
-        if (!name || !brandName || !dimension || stockQuantityRaw === undefined || lowStockThresholdRaw === undefined) {
-          results.errors.push({ row: index + 1, message: 'Missing required fields' });
-          continue;
+        // Apply defaults and track warnings
+        const name = originalName || `Product ${index + 1}`;
+        const brandName = originalBrandName || 'Generic';
+        const dimension = originalDimension || 'Standard';
+        const stockQuantityRaw = originalStockQuantity ?? 0;
+        const lowStockThresholdRaw = originalLowStockThreshold ?? 10;
+
+        // Convert to numbers with fallbacks
+        const stockQuantity = Number.isFinite(Number(stockQuantityRaw)) ? Number(stockQuantityRaw) : 0;
+        const lowStockThreshold = Number.isFinite(Number(lowStockThresholdRaw)) ? Number(lowStockThresholdRaw) : 10;
+
+        // Track warnings for missing fields
+        const warnings = [];
+        if (!originalName) warnings.push('name');
+        if (!originalBrandName) warnings.push('brand');
+        if (!originalDimension) warnings.push('dimension');
+        if (originalStockQuantity === undefined || originalStockQuantity === '') warnings.push('stock');
+        if (originalLowStockThreshold === undefined || originalLowStockThreshold === '') warnings.push('threshold');
+
+        if (warnings.length > 0) {
+          results.warnings.push({ 
+            row: index + 1, 
+            message: `Used defaults for: ${warnings.join(', ')}`,
+            fields: warnings
+          });
         }
 
-        const stockQuantity = Number(stockQuantityRaw);
-        const lowStockThreshold = Number(lowStockThresholdRaw);
-        if (!Number.isFinite(stockQuantity) || !Number.isFinite(lowStockThreshold)) {
-          results.errors.push({ row: index + 1, message: 'Invalid number in stockQuantity or lowStockThreshold' });
+        // Skip only if name is completely empty (this is the only truly required field)
+        if (!name || name === '') {
+          results.errors.push({ row: index + 1, message: 'Product name is required' });
           continue;
         }
 
