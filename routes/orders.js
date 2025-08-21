@@ -6,7 +6,64 @@ const Customer = require('../models/Customer');
 const Route = require('../models/Route');
 const Product = require('../models/Product');
 const { verifyToken, isAdmin, isStaffOrAdmin, canCreateOrders, canModifyOrders } = require('../middleware/auth');
-const { emitOrderCreated, emitOrderUpdated, emitOrderDeleted } = require('../socket/events');
+const { emitOrderCreated, emitOrderUpdated, emitOrderDeleted, emitProductUpdated } = require('../socket/events');
+
+// Stock management helper functions
+const validateStockAvailability = async (orderItems) => {
+  const stockErrors = [];
+  
+  for (const item of orderItems) {
+    if (!item.productId || !item.qty) continue;
+    
+    const product = await Product.findById(item.productId);
+    if (!product) {
+      stockErrors.push(`Product not found: ${item.name || item.productId}`);
+      continue;
+    }
+    
+    if (product.stockQuantity < item.qty) {
+      stockErrors.push(`Insufficient stock for ${product.name}: Available ${product.stockQuantity}, Required ${item.qty}`);
+    }
+  }
+  
+  return stockErrors;
+};
+
+const updateProductStock = async (orderItems, operation = 'decrease') => {
+  const updatedProducts = [];
+  
+  for (const item of orderItems) {
+    if (!item.productId || !item.qty) continue;
+    
+    const product = await Product.findById(item.productId);
+    if (!product) continue;
+    
+    const quantityChange = operation === 'decrease' ? -item.qty : item.qty;
+    const newStockQuantity = Math.max(0, product.stockQuantity + quantityChange);
+    
+    product.stockQuantity = newStockQuantity;
+    await product.save();
+    
+    updatedProducts.push(product);
+    
+    // Emit product update event for real-time updates
+    emitProductUpdated(product, {
+      id: 'system',
+      name: 'System',
+      role: 'System'
+    });
+  }
+  
+  return updatedProducts;
+};
+
+const checkLowStockAlerts = async (products) => {
+  const lowStockProducts = products.filter(product => 
+    product.stockQuantity <= product.lowStockThreshold
+  );
+  
+  return lowStockProducts;
+};
 
 // Get orders based on role
 router.get('/', verifyToken, async (req, res) => {
@@ -134,6 +191,18 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
     if (!assignedTo || !assignedToId) {
       return res.status(400).json({ message: 'Assigned To and Assigned To ID are required.' });
     }
+
+    // Validate stock availability before creating order
+    if (Array.isArray(req.body.orderItems) && req.body.orderItems.length > 0) {
+      const stockErrors = await validateStockAvailability(req.body.orderItems);
+      if (stockErrors.length > 0) {
+        return res.status(400).json({ 
+          message: 'Insufficient stock for some products',
+          stockErrors 
+        });
+      }
+    }
+
     const orderId = await generateOrderId();
 
     let status = 'active';
@@ -175,6 +244,17 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       isWithout // Set the isWithout field based on assignment
     });
     const newOrder = await order.save();
+
+    // Update product stock quantities after order creation
+    if (enrichedItems.length > 0) {
+      const updatedProducts = await updateProductStock(enrichedItems, 'decrease');
+      
+      // Check for low stock alerts
+      const lowStockProducts = await checkLowStockAlerts(updatedProducts);
+      if (lowStockProducts.length > 0) {
+        console.log('Low stock alert:', lowStockProducts.map(p => `${p.name}: ${p.stockQuantity}/${p.lowStockThreshold}`));
+      }
+    }
     
     // Emit WebSocket event for order creation
     emitOrderCreated(newOrder, {
@@ -281,8 +361,27 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
       })
     };
 
-    // If orderItems are present in update, enrich with brandName
+    // Handle stock management for order updates
+    let stockUpdated = false;
+    let updatedProducts = [];
+
+    // If orderItems are present in update, handle stock changes
     if (Array.isArray(req.body.orderItems)) {
+      // Validate stock availability for new quantities
+      const stockErrors = await validateStockAvailability(req.body.orderItems);
+      if (stockErrors.length > 0) {
+        return res.status(400).json({ 
+          message: 'Insufficient stock for some products',
+          stockErrors 
+        });
+      }
+
+      // Restore stock from original order items
+      if (order.orderItems && order.orderItems.length > 0) {
+        await updateProductStock(order.orderItems, 'increase');
+      }
+
+      // Decrease stock for new order items
       let enrichedUpdateItems = [...req.body.orderItems];
       if (enrichedUpdateItems.length > 0) {
         const productIds = enrichedUpdateItems.map((it) => it.productId).filter(Boolean);
@@ -292,6 +391,9 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
           ...it,
           brandName: it.brandName || idToBrand.get(String(it.productId)) || null,
         }));
+        
+        updatedProducts = await updateProductStock(enrichedUpdateItems, 'decrease');
+        stockUpdated = true;
       }
       updateData.orderItems = enrichedUpdateItems;
     }
@@ -301,6 +403,14 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
       updateData,
       { new: true }
     );
+
+    // Check for low stock alerts if stock was updated
+    if (stockUpdated && updatedProducts.length > 0) {
+      const lowStockProducts = await checkLowStockAlerts(updatedProducts);
+      if (lowStockProducts.length > 0) {
+        console.log('Low stock alert:', lowStockProducts.map(p => `${p.name}: ${p.stockQuantity}/${p.lowStockThreshold}`));
+      }
+    }
 
     // Emit WebSocket event for order update
     emitOrderUpdated(updatedOrder, {
@@ -322,26 +432,119 @@ router.delete('/by-order-id/:orderId', verifyToken, isAdmin, async (req, res) =>
     // Get order details before deletion for WebSocket event
     const orderToDelete = await Order.findOne({ orderId: req.params.orderId });
     
-    const order = await Order.findOneAndDelete({ orderId: req.params.orderId });
-    if (!order) {
+    if (!orderToDelete) {
       return res.status(404).json({ message: 'Order not found' });
     }
+
+    // Restore stock quantities when order is deleted
+    if (orderToDelete.orderItems && orderToDelete.orderItems.length > 0) {
+      await updateProductStock(orderToDelete.orderItems, 'increase');
+    }
+    
+    const order = await Order.findOneAndDelete({ orderId: req.params.orderId });
     
     // Emit WebSocket event for order deletion
-    if (orderToDelete) {
-      emitOrderDeleted(
-        orderToDelete.orderId,
-        orderToDelete.customerName || 'Order',
-        {
-          id: req.user.id,
-          name: req.user.name,
-          role: req.user.role
-        }
-      );
-    }
+    emitOrderDeleted(
+      orderToDelete.orderId,
+      orderToDelete.customerName || 'Order',
+      {
+        id: req.user.id,
+        name: req.user.name,
+        role: req.user.role
+      }
+    );
     
     res.json({ message: 'Order deleted successfully' });
   } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Cancel order and restore stock - Admin and Staff only
+router.post('/cancel/:orderId', verifyToken, isStaffOrAdmin, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const order = await Order.findOne({ orderId: req.params.orderId });
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    // Check if order can be cancelled (not already cancelled or completed)
+    if (order.status === 'cancelled') {
+      return res.status(400).json({ message: 'Order is already cancelled' });
+    }
+
+    if (order.orderStatus === 'Dispatched') {
+      return res.status(400).json({ message: 'Cannot cancel dispatched orders' });
+    }
+
+    // Restore stock quantities when order is cancelled
+    if (order.orderItems && order.orderItems.length > 0) {
+      await updateProductStock(order.orderItems, 'increase');
+    }
+
+    // Update order status to cancelled
+    const updatedOrder = await Order.findOneAndUpdate(
+      { orderId: req.params.orderId },
+      { 
+        status: 'cancelled',
+        orderStatus: 'Cancelled',
+        cancelledBy: user.name,
+        cancelledAt: new Date(),
+        cancellationReason: req.body.reason || 'Cancelled by admin'
+      },
+      { new: true }
+    );
+
+    // Emit WebSocket event for order cancellation
+    emitOrderUpdated(updatedOrder, {
+      id: req.user.id,
+      name: req.user.name,
+      role: req.user.role
+    });
+
+    res.json({ 
+      message: 'Order cancelled successfully',
+      order: updatedOrder
+    });
+  } catch (err) {
+    console.error('Order cancellation failed:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Get stock status for products in an order
+router.get('/stock-status/:orderId', verifyToken, async (req, res) => {
+  try {
+    const order = await Order.findOne({ orderId: req.params.orderId });
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    const stockStatus = [];
+    for (const item of order.orderItems) {
+      if (!item.productId) continue;
+      
+      const product = await Product.findById(item.productId);
+      if (!product) continue;
+      
+      stockStatus.push({
+        productId: item.productId,
+        productName: item.name || product.name,
+        requiredQuantity: item.qty,
+        availableStock: product.stockQuantity,
+        sufficient: product.stockQuantity >= item.qty,
+        lowStock: product.stockQuantity <= product.lowStockThreshold
+      });
+    }
+
+    res.json({ stockStatus });
+  } catch (err) {
+    console.error('Stock status check failed:', err);
     res.status(500).json({ message: err.message });
   }
 });

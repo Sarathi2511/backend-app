@@ -14,10 +14,10 @@ const orderSchema = new mongoose.Schema({
   orderId: { type: String, required: true, unique: true },
   date: { type: Date, required: true },
   scheduledFor: { type: Date, default: null }, // New field for scheduled orders
-  status: { type: String, enum: ['scheduled', 'active', 'completed'], default: 'active' }, // New status field
+  status: { type: String, enum: ['scheduled', 'active', 'completed', 'cancelled'], default: 'active' }, // New status field
   customerName: { type: String, required: true },
   orderRoute: { type: String, required: true }, // New field for order route
-  orderStatus: { type: String, required: true, enum: ['Pending', 'DC', 'Invoice', 'Dispatched'] },
+  orderStatus: { type: String, required: true, enum: ['Pending', 'DC', 'Invoice', 'Dispatched', 'Cancelled'] },
   paymentCondition: { type: String, required: true },
   assignedTo: { type: String, required: true },
   assignedToId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -41,6 +41,10 @@ const orderSchema = new mongoose.Schema({
   orderImage: { type: String, default: null }, // Cloudinary image URL for the order
   isWithout: { type: Boolean, default: false }, // Special flag for orders assigned to Gaurav Miniyar
   additionalNotes: { type: String, default: '' }, // Additional notes for the order
+  // Cancellation tracking fields
+  cancelledBy: { type: String, default: null }, // User name who cancelled the order
+  cancelledAt: { type: Date, default: null }, // When the order was cancelled
+  cancellationReason: { type: String, default: null }, // Reason for cancellation
 });
 
 // Middleware to update status history
