@@ -320,11 +320,11 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
       return res.status(403).json({ message: 'Unauthorized access' });
     }
 
-    // Validate status transition - Strict workflow enforcement
+    // Validate status transition - Flexible workflow enforcement
     if (req.body.orderStatus && req.body.orderStatus !== order.orderStatus) {
       const validTransitions = {
         'Pending': ['DC'],
-        'DC': ['Invoice'],
+        'DC': ['Invoice', 'Dispatched'], // Allow both Invoice and Dispatched from DC
         'Invoice': ['Dispatched'],
         'Dispatched': [] // Final state, no further transitions
       };
