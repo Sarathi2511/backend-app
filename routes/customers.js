@@ -13,6 +13,19 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
+// Get customer details by name
+router.get('/by-name/:name', verifyToken, async (req, res) => {
+  try {
+    const customer = await Customer.findOne({ name: req.params.name }, 'name phone address');
+    if (!customer) {
+      return res.status(404).json({ message: 'Customer not found' });
+    }
+    res.json(customer);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 module.exports = router;
 
 
