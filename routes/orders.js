@@ -179,7 +179,7 @@ const generateOrderId = async () => {
   }
 };
 
-// Create new order with role check
+// Create new order with role check and partial fulfillment support
 router.post('/', verifyToken, canCreateOrders, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
@@ -187,20 +187,62 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    const { assignedTo, assignedToId, scheduledFor } = req.body;
+    const { assignedTo, assignedToId, scheduledFor, orderItems, selectedItems } = req.body;
+    
+    // Debug logging
+    console.log('Order creation request:', {
+      orderItemsLength: orderItems?.length,
+      selectedItems: selectedItems,
+      selectedItemsType: typeof selectedItems,
+      selectedItemsIsArray: Array.isArray(selectedItems)
+    });
+    
     if (!assignedTo || !assignedToId) {
       return res.status(400).json({ message: 'Assigned To and Assigned To ID are required.' });
     }
 
-    // Validate stock availability before creating order
-    if (Array.isArray(req.body.orderItems) && req.body.orderItems.length > 0) {
-      const stockErrors = await validateStockAvailability(req.body.orderItems);
+    // Handle partial fulfillment logic
+    let fulfilledItems = [];
+    let partialItems = [];
+    let isPartialOrder = false;
+
+    if (Array.isArray(orderItems) && orderItems.length > 0) {
+      if (Array.isArray(selectedItems)) {
+        // Filter items based on selectedItems (indices)
+        fulfilledItems = orderItems.filter((_, index) => selectedItems.includes(index));
+        partialItems = orderItems.filter((_, index) => !selectedItems.includes(index));
+        isPartialOrder = partialItems.length > 0;
+      } else {
+        // If no selectedItems provided, use all items (backward compatibility)
+        fulfilledItems = orderItems;
+        partialItems = [];
+        isPartialOrder = false;
+      }
+    }
+
+    // Debug logging after filtering
+    console.log('After filtering:', {
+      fulfilledItemsLength: fulfilledItems.length,
+      partialItemsLength: partialItems.length,
+      isPartialOrder: isPartialOrder
+    });
+
+    // Validate stock availability only for fulfilled items
+    if (fulfilledItems.length > 0) {
+      const stockErrors = await validateStockAvailability(fulfilledItems);
       if (stockErrors.length > 0) {
         return res.status(400).json({ 
-          message: 'Insufficient stock for some products',
+          message: 'Insufficient stock for selected items',
           stockErrors 
         });
       }
+    }
+
+    // Check if at least one item is selected
+    if (fulfilledItems.length === 0) {
+      return res.status(400).json({ 
+        message: 'Please select at least one item for the order.' 
+      });
     }
 
     const orderId = await generateOrderId();
@@ -219,13 +261,25 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
     // Check if order should be marked as isWithout (assigned to Gaurav Miniyar)
     const isWithout = assignedToId === '685a4143374df5c794581187';
 
-    // Enrich order items with brandName from products
-    let enrichedItems = Array.isArray(req.body.orderItems) ? [...req.body.orderItems] : [];
-    if (enrichedItems.length > 0) {
-      const productIds = enrichedItems.map((it) => it.productId).filter(Boolean);
+    // Enrich fulfilled items with brandName from products
+    let enrichedFulfilledItems = [];
+    if (fulfilledItems.length > 0) {
+      const productIds = fulfilledItems.map((it) => it.productId).filter(Boolean);
       const products = await Product.find({ _id: { $in: productIds } }, 'brandName');
       const idToBrand = new Map(products.map((p) => [String(p._id), p.brandName]));
-      enrichedItems = enrichedItems.map((it) => ({
+      enrichedFulfilledItems = fulfilledItems.map((it) => ({
+        ...it,
+        brandName: it.brandName || idToBrand.get(String(it.productId)) || null,
+      }));
+    }
+
+    // Enrich partial items with brandName from products
+    let enrichedPartialItems = [];
+    if (partialItems.length > 0) {
+      const productIds = partialItems.map((it) => it.productId).filter(Boolean);
+      const products = await Product.find({ _id: { $in: productIds } }, 'brandName');
+      const idToBrand = new Map(products.map((p) => [String(p._id), p.brandName]));
+      enrichedPartialItems = partialItems.map((it) => ({
         ...it,
         brandName: it.brandName || idToBrand.get(String(it.productId)) || null,
       }));
@@ -233,7 +287,7 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
 
     const order = new Order({
       ...req.body, // additionalNotes will be included if present
-      orderItems: enrichedItems,
+      orderItems: enrichedFulfilledItems, // Only fulfilled items go into orderItems
       assignedTo,
       assignedToId,
       orderId,
@@ -241,13 +295,18 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       scheduledFor: scheduledDate,
       status,
       createdBy: user.name, // Ensure createdBy is set to the current user's name
-      isWithout // Set the isWithout field based on assignment
+      isWithout, // Set the isWithout field based on assignment
+      // Partial fulfillment fields
+      isPartialOrder,
+      partialItems: enrichedPartialItems,
+      originalItemCount: orderItems.length,
+      fulfilledItemCount: enrichedFulfilledItems.length
     });
     const newOrder = await order.save();
 
-    // Update product stock quantities after order creation
-    if (enrichedItems.length > 0) {
-      const updatedProducts = await updateProductStock(enrichedItems, 'decrease');
+    // Update product stock quantities only for fulfilled items
+    if (enrichedFulfilledItems.length > 0) {
+      const updatedProducts = await updateProductStock(enrichedFulfilledItems, 'decrease');
       
       // Check for low stock alerts
       const lowStockProducts = await checkLowStockAlerts(updatedProducts);
@@ -361,7 +420,81 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
       })
     };
 
-    // Handle stock management for order updates
+    // Handle partial order completion
+    if (req.body.completePartialOrder && order.isPartialOrder) {
+      const { itemsToAdd } = req.body;
+      
+      if (!Array.isArray(itemsToAdd) || itemsToAdd.length === 0) {
+        return res.status(400).json({ 
+          message: 'No items provided to complete partial order' 
+        });
+      }
+
+      // Validate stock availability for items to add
+      const stockErrors = await validateStockAvailability(itemsToAdd);
+      if (stockErrors.length > 0) {
+        return res.status(400).json({ 
+          message: 'Insufficient stock for items to add',
+          stockErrors 
+        });
+      }
+
+      // Enrich items to add with brandName
+      let enrichedItemsToAdd = [...itemsToAdd];
+      if (enrichedItemsToAdd.length > 0) {
+        const productIds = enrichedItemsToAdd.map((it) => it.productId).filter(Boolean);
+        const products = await Product.find({ _id: { $in: productIds } }, 'brandName');
+        const idToBrand = new Map(products.map((p) => [String(p._id), p.brandName]));
+        enrichedItemsToAdd = enrichedItemsToAdd.map((it) => ({
+          ...it,
+          brandName: it.brandName || idToBrand.get(String(it.productId)) || null,
+        }));
+      }
+
+      // Add new items to existing order items
+      const updatedOrderItems = [...order.orderItems, ...enrichedItemsToAdd];
+      
+      // Remove added items from partial items
+      const remainingPartialItems = order.partialItems.filter(partialItem => 
+        !enrichedItemsToAdd.some(newItem => 
+          newItem.productId.toString() === partialItem.productId.toString()
+        )
+      );
+
+      // Update partial fulfillment fields
+      updateData.orderItems = updatedOrderItems;
+      updateData.partialItems = remainingPartialItems;
+      updateData.fulfilledItemCount = updatedOrderItems.length;
+      
+      // Check if order is now complete
+      if (remainingPartialItems.length === 0) {
+        updateData.isPartialOrder = false;
+        updateData.partialItems = [];
+      }
+
+      // Deduct stock for new items
+      await updateProductStock(enrichedItemsToAdd, 'decrease');
+      
+      // Emit WebSocket event for partial order completion
+      emitOrderUpdated({
+        ...order.toObject(),
+        ...updateData
+      }, {
+        id: req.user.id,
+        name: req.user.name,
+        role: req.user.role
+      });
+
+      const updatedOrder = await Order.findOneAndUpdate(
+        { orderId: req.params.orderId },
+        updateData,
+        { new: true }
+      );
+
+      return res.json(updatedOrder);
+    }
+
+    // Handle stock management for regular order updates
     let stockUpdated = false;
     let updatedProducts = [];
 
@@ -545,6 +678,47 @@ router.get('/stock-status/:orderId', verifyToken, async (req, res) => {
     res.json({ stockStatus });
   } catch (err) {
     console.error('Stock status check failed:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Get partial order details
+router.get('/partial-details/:orderId', verifyToken, async (req, res) => {
+  try {
+    const order = await Order.findOne({ orderId: req.params.orderId });
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    if (!order.isPartialOrder) {
+      return res.status(400).json({ message: 'This is not a partial order' });
+    }
+
+    // Check stock availability for partial items
+    const partialItemsWithStock = [];
+    for (const item of order.partialItems) {
+      if (!item.productId) continue;
+      
+      const product = await Product.findById(item.productId);
+      if (!product) continue;
+      
+      partialItemsWithStock.push({
+        ...item,
+        availableStock: product.stockQuantity,
+        canFulfill: product.stockQuantity >= item.qty,
+        lowStock: product.stockQuantity <= product.lowStockThreshold
+      });
+    }
+
+    res.json({
+      isPartialOrder: order.isPartialOrder,
+      partialItems: partialItemsWithStock,
+      originalItemCount: order.originalItemCount,
+      fulfilledItemCount: order.fulfilledItemCount,
+      pendingItemCount: order.partialItems.length
+    });
+  } catch (err) {
+    console.error('Partial order details check failed:', err);
     res.status(500).json({ message: err.message });
   }
 });

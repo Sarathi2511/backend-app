@@ -45,6 +45,11 @@ const orderSchema = new mongoose.Schema({
   cancelledBy: { type: String, default: null }, // User name who cancelled the order
   cancelledAt: { type: Date, default: null }, // When the order was cancelled
   cancellationReason: { type: String, default: null }, // Reason for cancellation
+  // Partial fulfillment fields
+  isPartialOrder: { type: Boolean, default: false }, // Flag to indicate if this is a partial order
+  partialItems: { type: [orderItemSchema], default: [] }, // Items that were not included in the initial order
+  originalItemCount: { type: Number, default: 0 }, // Total number of items originally selected
+  fulfilledItemCount: { type: Number, default: 0 }, // Number of items actually fulfilled in the order
 });
 
 // Middleware to update status history
