@@ -187,61 +187,19 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    const { assignedTo, assignedToId, scheduledFor, orderItems, selectedItems } = req.body;
-    
-    // Debug logging
-    console.log('Order creation request:', {
-      orderItemsLength: orderItems?.length,
-      selectedItems: selectedItems,
-      selectedItemsType: typeof selectedItems,
-      selectedItemsIsArray: Array.isArray(selectedItems)
-    });
+    const { assignedTo, assignedToId, scheduledFor, orderItems } = req.body;
     
     if (!assignedTo || !assignedToId) {
       return res.status(400).json({ message: 'Assigned To and Assigned To ID are required.' });
     }
 
-    // Handle partial fulfillment logic
-    let fulfilledItems = [];
-    let partialItems = [];
-    let isPartialOrder = false;
+    // No stock validation at order creation - all items are included
+    // Partial fulfillment will be handled at dispatch time
 
-    if (Array.isArray(orderItems) && orderItems.length > 0) {
-      if (Array.isArray(selectedItems)) {
-        // Filter items based on selectedItems (indices)
-        fulfilledItems = orderItems.filter((_, index) => selectedItems.includes(index));
-        partialItems = orderItems.filter((_, index) => !selectedItems.includes(index));
-        isPartialOrder = partialItems.length > 0;
-      } else {
-        // If no selectedItems provided, use all items (backward compatibility)
-        fulfilledItems = orderItems;
-        partialItems = [];
-        isPartialOrder = false;
-      }
-    }
-
-    // Debug logging after filtering
-    console.log('After filtering:', {
-      fulfilledItemsLength: fulfilledItems.length,
-      partialItemsLength: partialItems.length,
-      isPartialOrder: isPartialOrder
-    });
-
-    // Validate stock availability only for fulfilled items
-    if (fulfilledItems.length > 0) {
-      const stockErrors = await validateStockAvailability(fulfilledItems);
-      if (stockErrors.length > 0) {
+    // Check if at least one item is provided
+    if (!orderItems || orderItems.length === 0) {
         return res.status(400).json({ 
-          message: 'Insufficient stock for selected items',
-          stockErrors 
-        });
-      }
-    }
-
-    // Check if at least one item is selected
-    if (fulfilledItems.length === 0) {
-      return res.status(400).json({ 
-        message: 'Please select at least one item for the order.' 
+        message: 'Please add at least one item to the order.' 
       });
     }
 
@@ -261,25 +219,13 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
     // Check if order should be marked as isWithout (assigned to Gaurav Miniyar)
     const isWithout = assignedToId === '685a4143374df5c794581187';
 
-    // Enrich fulfilled items with brandName from products
-    let enrichedFulfilledItems = [];
-    if (fulfilledItems.length > 0) {
-      const productIds = fulfilledItems.map((it) => it.productId).filter(Boolean);
+    // Enrich all items with brandName from products
+    let enrichedOrderItems = [];
+    if (orderItems.length > 0) {
+      const productIds = orderItems.map((it) => it.productId).filter(Boolean);
       const products = await Product.find({ _id: { $in: productIds } }, 'brandName');
       const idToBrand = new Map(products.map((p) => [String(p._id), p.brandName]));
-      enrichedFulfilledItems = fulfilledItems.map((it) => ({
-        ...it,
-        brandName: it.brandName || idToBrand.get(String(it.productId)) || null,
-      }));
-    }
-
-    // Enrich partial items with brandName from products
-    let enrichedPartialItems = [];
-    if (partialItems.length > 0) {
-      const productIds = partialItems.map((it) => it.productId).filter(Boolean);
-      const products = await Product.find({ _id: { $in: productIds } }, 'brandName');
-      const idToBrand = new Map(products.map((p) => [String(p._id), p.brandName]));
-      enrichedPartialItems = partialItems.map((it) => ({
+      enrichedOrderItems = orderItems.map((it) => ({
         ...it,
         brandName: it.brandName || idToBrand.get(String(it.productId)) || null,
       }));
@@ -287,7 +233,7 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
 
     const order = new Order({
       ...req.body, // additionalNotes will be included if present
-      orderItems: enrichedFulfilledItems, // Only fulfilled items go into orderItems
+      orderItems: enrichedOrderItems, // All items go into orderItems initially
       assignedTo,
       assignedToId,
       orderId,
@@ -296,24 +242,15 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       status,
       createdBy: user.name, // Ensure createdBy is set to the current user's name
       isWithout, // Set the isWithout field based on assignment
-      // Partial fulfillment fields
-      isPartialOrder,
-      partialItems: enrichedPartialItems,
+      // No partial fulfillment fields at creation - will be set at dispatch time
+      isPartialOrder: false,
+      partialItems: [],
       originalItemCount: orderItems.length,
-      fulfilledItemCount: enrichedFulfilledItems.length
+      fulfilledItemCount: orderItems.length
     });
     const newOrder = await order.save();
 
-    // Update product stock quantities only for fulfilled items
-    if (enrichedFulfilledItems.length > 0) {
-      const updatedProducts = await updateProductStock(enrichedFulfilledItems, 'decrease');
-      
-      // Check for low stock alerts
-      const lowStockProducts = await checkLowStockAlerts(updatedProducts);
-      if (lowStockProducts.length > 0) {
-        console.log('Low stock alert:', lowStockProducts.map(p => `${p.name}: ${p.stockQuantity}/${p.lowStockThreshold}`));
-      }
-    }
+    // No stock update at order creation - stock will be updated at dispatch time
     
     // Emit WebSocket event for order creation
     emitOrderCreated(newOrder, {
@@ -379,6 +316,20 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
       return res.status(403).json({ message: 'Unauthorized access' });
     }
 
+    // Check if order should be marked as isWithout (assigned to Gaurav Miniyar)
+    const isWithout = req.body.assignedToId === '685a4143374df5c794581187';
+
+    // Prepare update data
+    let updateData = {
+      ...req.body, // additionalNotes will be included if present
+      isWithout, // Set the isWithout field based on assignment
+      // If status is being updated, record who did it
+      ...(req.body.orderStatus !== order.orderStatus && {
+        statusUpdatedBy: req.user.id,
+        statusUpdatedAt: new Date()
+      })
+    };
+
     // Validate status transition - Flexible workflow enforcement
     if (req.body.orderStatus && req.body.orderStatus !== order.orderStatus) {
       const validTransitions = {
@@ -399,26 +350,65 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
       }
 
       // Additional validation for Dispatched status
-      if (newStatus === 'Dispatched' && !req.body.deliveryPartner) {
+      if (newStatus === 'Dispatched') {
+        if (!req.body.deliveryPartner) {
         return res.status(400).json({ 
           message: 'Cannot mark as Dispatched: Please select a delivery partner'
         });
+        }
+        
+        // Handle partial fulfillment at dispatch time
+        if (req.body.dispatchItems && Array.isArray(req.body.dispatchItems)) {
+          // This is a dispatch with item selection
+          const dispatchItems = req.body.dispatchItems;
+          const allOrderItems = order.orderItems;
+          
+          // Validate stock for items being dispatched
+          const itemsToDispatch = allOrderItems.filter((_, index) => dispatchItems.includes(index));
+          const stockErrors = await validateStockAvailability(itemsToDispatch);
+          if (stockErrors.length > 0) {
+            return res.status(400).json({ 
+              message: 'Insufficient stock for some items being dispatched',
+              stockErrors 
+            });
+          }
+          
+          // Create partial order if not all items are being dispatched
+          const itemsNotDispatched = allOrderItems.filter((_, index) => !dispatchItems.includes(index));
+          
+          if (itemsNotDispatched.length > 0) {
+            // This is a partial dispatch
+            updateData.orderItems = itemsToDispatch;
+            updateData.partialItems = itemsNotDispatched;
+            updateData.isPartialOrder = true;
+            updateData.fulfilledItemCount = itemsToDispatch.length;
+            
+            // Update stock only for dispatched items
+            await updateProductStock(itemsToDispatch, 'decrease');
+          } else {
+            // Full dispatch - all items are being dispatched
+            updateData.isPartialOrder = false;
+            updateData.partialItems = [];
+            updateData.fulfilledItemCount = allOrderItems.length;
+            
+            // Update stock for all items
+            await updateProductStock(allOrderItems, 'decrease');
+          }
+        } else {
+          // No item selection provided - dispatch all items
+          const stockErrors = await validateStockAvailability(order.orderItems);
+          if (stockErrors.length > 0) {
+            return res.status(400).json({ 
+              message: 'Insufficient stock for some items',
+              stockErrors 
+            });
+          }
+          
+          // Update stock for all items
+          await updateProductStock(order.orderItems, 'decrease');
+        }
       }
     }
-
-    // Check if order should be marked as isWithout (assigned to Gaurav Miniyar)
-    const isWithout = req.body.assignedToId === '685a4143374df5c794581187';
-
-    // Prepare update data
-    let updateData = {
-      ...req.body, // additionalNotes will be included if present
-      isWithout, // Set the isWithout field based on assignment
-      // If status is being updated, record who did it
-      ...(req.body.orderStatus !== order.orderStatus && {
-        statusUpdatedBy: req.user.id,
-        statusUpdatedAt: new Date()
-      })
-    };
 
     // Handle partial order completion
     if (req.body.completePartialOrder && order.isPartialOrder) {
@@ -678,6 +668,49 @@ router.get('/stock-status/:orderId', verifyToken, async (req, res) => {
     res.json({ stockStatus });
   } catch (err) {
     console.error('Stock status check failed:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Get dispatch confirmation data (for orders being dispatched)
+router.get('/dispatch-confirmation/:orderId', verifyToken, async (req, res) => {
+  try {
+    const order = await Order.findOne({ orderId: req.params.orderId });
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    // Check stock availability for all order items
+    const itemsWithStock = [];
+    for (const item of order.orderItems) {
+      if (!item.productId) continue;
+      
+      const product = await Product.findById(item.productId);
+      if (!product) continue;
+      
+      itemsWithStock.push({
+        ...item,
+        // Ensure we have the correct item name from product if missing
+        name: item.name || product.name,
+        // Ensure we have all required fields
+        qty: item.qty || 0,
+        price: item.price || 0,
+        total: item.total || (item.qty * item.price) || 0,
+        availableStock: product.stockQuantity,
+        canFulfill: product.stockQuantity >= (item.qty || 0),
+        lowStock: product.stockQuantity <= product.lowStockThreshold
+      });
+    }
+
+    res.json({
+      orderId: order.orderId,
+      customerName: order.customerName,
+      orderItems: itemsWithStock,
+      totalItems: order.orderItems.length,
+      canFulfillAll: itemsWithStock.every(item => item.canFulfill)
+    });
+  } catch (err) {
+    console.error('Dispatch confirmation data failed:', err);
     res.status(500).json({ message: err.message });
   }
 });
