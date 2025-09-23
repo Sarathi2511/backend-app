@@ -74,6 +74,47 @@ router.put('/:id', verifyToken, canModifyProducts, async (req, res) => {
   }
 });
 
+// Update stock quantity - Admin, Staff, and Executive can update
+router.patch('/:id/stock', verifyToken, canModifyProducts, async (req, res) => {
+  try {
+    const { stockToAdd } = req.body;
+    
+    // Validate input
+    if (typeof stockToAdd !== 'number' || stockToAdd <= 0) {
+      return res.status(400).json({ message: 'Stock to add must be a positive number' });
+    }
+    
+    const product = await Product.findById(req.params.id);
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+    
+    // Update stock quantity
+    const newStockQuantity = product.stockQuantity + stockToAdd;
+    const updatedProduct = await Product.findByIdAndUpdate(
+      req.params.id,
+      { stockQuantity: newStockQuantity },
+      { new: true }
+    );
+    
+    // Emit WebSocket event for product update
+    emitProductUpdated(updatedProduct, {
+      id: req.user.id,
+      name: req.user.name,
+      role: req.user.role
+    });
+    
+    res.json({
+      message: 'Stock updated successfully',
+      product: updatedProduct,
+      stockAdded: stockToAdd,
+      newStockQuantity: newStockQuantity
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // Delete product - Admin only
 router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
   try {
