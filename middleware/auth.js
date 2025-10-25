@@ -48,12 +48,12 @@ const isStaffOrAdmin = async (req, res, next) => {
   }
 };
 
-// Middleware to check if user can create orders (Admin, Staff, or Executive)
+// Middleware to check if user can create orders (Super Admin, Admin, Staff, or Executive)
 const canCreateOrders = async (req, res, next) => {
   try {
     const user = await User.findById(req.user.id);
     
-    if (!user || !['Admin', 'Staff', 'Executive'].includes(user.role)) {
+    if (!user || !['Super Admin', 'Admin', 'Staff', 'Executive'].includes(user.role)) {
       return res.status(403).json({ success: false, message: 'Access denied. Insufficient permissions.' });
     }
     
@@ -78,12 +78,12 @@ const canModifyOrders = async (req, res, next) => {
   }
 };
 
-// Middleware to check if user can create products (Admin, Staff, or Executive)
+// Middleware to check if user can create products (Super Admin, Admin, Staff, or Executive)
 const canCreateProducts = async (req, res, next) => {
   try {
     const user = await User.findById(req.user.id);
     
-    if (!user || !['Admin', 'Staff', 'Executive'].includes(user.role)) {
+    if (!user || !['Super Admin', 'Admin', 'Staff', 'Executive'].includes(user.role)) {
       return res.status(403).json({ success: false, message: 'Access denied. Cannot create products with current role.' });
     }
     
