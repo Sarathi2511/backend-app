@@ -82,8 +82,8 @@ router.get('/', verifyToken, async (req, res) => {
         { scheduledFor: { $lte: now } }
       ]
     };
-    // Admin and Staff can see all orders
-    if (['Admin', 'Staff'].includes(user.role)) {
+    // Super Admin, Admin and Staff can see all orders
+    if (['Super Admin', 'Admin', 'Staff'].includes(user.role)) {
       orders = await Order.find(timeFilter);
     }
     // Executive can only see their own orders
@@ -193,9 +193,6 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       return res.status(400).json({ message: 'Assigned To and Assigned To ID are required.' });
     }
 
-    // No stock validation at order creation - all items are included
-    // Partial fulfillment will be handled at dispatch time
-
     // Check if at least one item is provided
     if (!orderItems || orderItems.length === 0) {
         return res.status(400).json({ 
@@ -248,9 +245,8 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       originalItemCount: orderItems.length,
       fulfilledItemCount: orderItems.length
     });
+    
     const newOrder = await order.save();
-
-    // No stock update at order creation - stock will be updated at dispatch time
     
     // Emit WebSocket event for order creation
     emitOrderCreated(newOrder, {
@@ -312,7 +308,7 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
           message: 'Access denied. You can only update orders created by you.' 
         });
       }
-    } else if (!['Admin', 'Staff'].includes(user.role)) {
+    } else if (!['Super Admin', 'Admin', 'Staff'].includes(user.role)) {
       return res.status(403).json({ message: 'Unauthorized access' });
     }
 
@@ -357,24 +353,15 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
         });
         }
         
-        // Handle partial fulfillment at dispatch time
+        // Validate and deduct stock when marking as Dispatched
         if (req.body.dispatchItems && Array.isArray(req.body.dispatchItems)) {
           // This is a dispatch with item selection
           const dispatchItems = req.body.dispatchItems;
           const allOrderItems = order.orderItems;
           
-          // Validate stock for items being dispatched
-          const itemsToDispatch = allOrderItems.filter((_, index) => dispatchItems.includes(index));
-          const stockErrors = await validateStockAvailability(itemsToDispatch);
-          if (stockErrors.length > 0) {
-            return res.status(400).json({ 
-              message: 'Insufficient stock for some items being dispatched',
-              stockErrors 
-            });
-          }
-          
           // Create partial order if not all items are being dispatched
           const itemsNotDispatched = allOrderItems.filter((_, index) => !dispatchItems.includes(index));
+          const itemsToDispatch = allOrderItems.filter((_, index) => dispatchItems.includes(index));
           
           if (itemsNotDispatched.length > 0) {
             // This is a partial dispatch
@@ -383,7 +370,14 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
             updateData.isPartialOrder = true;
             updateData.fulfilledItemCount = itemsToDispatch.length;
             
-            // Update stock only for dispatched items
+            // Validate and deduct stock only for items being dispatched
+            const stockErrors = await validateStockAvailability(itemsToDispatch);
+            if (stockErrors.length > 0) {
+              return res.status(400).json({ 
+                message: 'Insufficient stock for some items being dispatched',
+                stockErrors 
+              });
+            }
             await updateProductStock(itemsToDispatch, 'decrease');
           } else {
             // Full dispatch - all items are being dispatched
@@ -391,11 +385,19 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
             updateData.partialItems = [];
             updateData.fulfilledItemCount = allOrderItems.length;
             
-            // Update stock for all items
+            // Validate and deduct stock for all items
+            const stockErrors = await validateStockAvailability(allOrderItems);
+            if (stockErrors.length > 0) {
+              return res.status(400).json({ 
+                message: 'Insufficient stock for some items',
+                stockErrors 
+              });
+            }
             await updateProductStock(allOrderItems, 'decrease');
           }
         } else {
           // No item selection provided - dispatch all items
+          // Validate and deduct stock for all items
           const stockErrors = await validateStockAvailability(order.orderItems);
           if (stockErrors.length > 0) {
             return res.status(400).json({ 
@@ -403,8 +405,6 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
               stockErrors 
             });
           }
-          
-          // Update stock for all items
           await updateProductStock(order.orderItems, 'decrease');
         }
       }
