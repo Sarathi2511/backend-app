@@ -7,7 +7,7 @@ const { emitStaffCreated, emitStaffUpdated, emitStaffDeleted } = require('../soc
 // Get all staff members
 router.get('/', verifyToken, async (req, res) => {
   try {
-    const staff = await User.find({ role: { $in: ['Super Admin', 'Admin', 'Staff', 'Executive'] } }).select('-password');
+    const staff = await User.find({ role: { $in: ['Admin', 'Staff', 'Executive'] } }).select('-password');
     res.json(staff);
   } catch (err) {
     res.status(500).json({ message: err.message });

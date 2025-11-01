@@ -21,44 +21,8 @@ app.use(express.json());
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
     console.log('Connected to MongoDB');
-    // Initialize Super Admin after database connection
-    initializeSuperAdmin();
   })
   .catch(err => console.error('Could not connect to MongoDB', err));
-
-// Function to initialize Super Admin
-const initializeSuperAdmin = async () => {
-  try {
-    // Check if Super Admin already exists
-    const existingSuperAdmin = await User.findOne({ phone: '8087779333' });
-    
-    if (existingSuperAdmin) {
-      // Update existing Super Admin to ensure correct credentials
-      await User.findOneAndUpdate(
-        { phone: '8087779333' },
-        {
-          name: 'Super Admin',
-          phone: '8087779333',
-          password: 'shubham18',
-          role: 'Super Admin'
-        }
-      );
-      console.log('Super Admin verified and updated');
-    } else {
-      // Create new Super Admin
-      const superAdmin = new User({
-        name: 'Super Admin',
-        phone: '8087779333',
-        password: 'shubham18',
-        role: 'Super Admin'
-      });
-      await superAdmin.save();
-      console.log('Super Admin created successfully');
-    }
-  } catch (error) {
-    console.error('Error initializing Super Admin:', error);
-  }
-};
 
 // JWT Secret
 if (!process.env.JWT_SECRET) {
