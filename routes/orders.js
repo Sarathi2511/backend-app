@@ -343,20 +343,105 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
       // Additional validation for Dispatched status
       if (newStatus === 'Dispatched') {
         if (!req.body.deliveryPartner) {
-        return res.status(400).json({ 
-          message: 'Cannot mark as Dispatched: Please select a delivery partner'
-        });
-        }
-        
-        // Validate and deduct stock when marking as Dispatched
-        const stockErrors = await validateStockAvailability(order.orderItems);
-        if (stockErrors.length > 0) {
           return res.status(400).json({ 
-            message: 'Insufficient stock for some items',
-            stockErrors 
+            message: 'Cannot mark as Dispatched: Please select a delivery partner'
           });
         }
-        await updateProductStock(order.orderItems, 'decrease');
+        
+        // Handle partial dispatch if dispatchItems are provided
+        if (req.body.dispatchItems && Array.isArray(req.body.dispatchItems)) {
+          const dispatchItems = req.body.dispatchItems;
+          
+          // Build items to dispatch with updated quantities
+          const itemsToDispatch = [];
+          const fulfilledItems = [];
+          const pendingItems = [];
+          
+          for (let i = 0; i < dispatchItems.length; i++) {
+            const dispatchItem = dispatchItems[i];
+            const originalItem = order.orderItems[i];
+            
+            if (!originalItem) continue;
+            
+            const dispatchQty = dispatchItem.dispatchQty || 0;
+            const originalQty = originalItem.qty;
+            
+            if (dispatchQty > 0) {
+              // Add to items to dispatch for stock validation
+              itemsToDispatch.push({
+                productId: originalItem.productId,
+                name: originalItem.name,
+                brandName: originalItem.brandName,
+                dimension: originalItem.dimension,
+                qty: dispatchQty,
+                price: originalItem.price,
+                total: originalItem.price * dispatchQty
+              });
+              
+              // Add to fulfilled items
+              fulfilledItems.push({
+                productId: originalItem.productId,
+                name: originalItem.name,
+                brandName: originalItem.brandName,
+                dimension: originalItem.dimension,
+                qty: dispatchQty,
+                price: originalItem.price,
+                total: originalItem.price * dispatchQty
+              });
+            }
+            
+            if (dispatchQty < originalQty) {
+              // Add remaining quantity to pending items
+              pendingItems.push({
+                productId: originalItem.productId,
+                name: originalItem.name,
+                brandName: originalItem.brandName,
+                dimension: originalItem.dimension,
+                qty: originalQty - dispatchQty,
+                price: originalItem.price,
+                total: originalItem.price * (originalQty - dispatchQty)
+              });
+            }
+          }
+          
+          // Validate and deduct stock only for dispatched quantities
+          const stockErrors = await validateStockAvailability(itemsToDispatch);
+          if (stockErrors.length > 0) {
+            return res.status(400).json({ 
+              message: 'Insufficient stock for some items',
+              stockErrors 
+            });
+          }
+          await updateProductStock(itemsToDispatch, 'decrease');
+          
+          // Check if this is a partial order
+          const isPartial = pendingItems.length > 0;
+          
+          if (isPartial) {
+            // Store original order items if not already stored
+            if (!order.originalOrderItems || order.originalOrderItems.length === 0) {
+              updateData.originalOrderItems = order.orderItems;
+            }
+            updateData.isPartialOrder = true;
+            updateData.fulfilledItems = fulfilledItems;
+            updateData.pendingItems = pendingItems;
+          } else {
+            // Full dispatch - clear partial order flags
+            updateData.isPartialOrder = false;
+            updateData.fulfilledItems = [];
+            updateData.pendingItems = [];
+          }
+        } else {
+          // No dispatch items provided, dispatch all
+          const stockErrors = await validateStockAvailability(order.orderItems);
+          if (stockErrors.length > 0) {
+            return res.status(400).json({ 
+              message: 'Insufficient stock for some items',
+              stockErrors 
+            });
+          }
+          await updateProductStock(order.orderItems, 'decrease');
+        }
       }
     }
 
@@ -422,6 +507,80 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
   } catch (err) {
     console.error('Order update failed:', err);
     res.status(400).json({ message: err.message });
+  }
+});
+
+// Complete partial order - dispatch remaining items
+router.post('/complete-partial/:orderId', verifyToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const order = await Order.findOne({ orderId: req.params.orderId });
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    if (!order.isPartialOrder) {
+      return res.status(400).json({ message: 'This is not a partial order' });
+    }
+
+    if (order.orderStatus !== 'Dispatched') {
+      return res.status(400).json({ message: 'Order must be in Dispatched status' });
+    }
+
+    // Validate stock for pending items
+    const stockErrors = await validateStockAvailability(order.pendingItems);
+    if (stockErrors.length > 0) {
+      return res.status(400).json({ 
+        message: 'Insufficient stock for pending items',
+        stockErrors 
+      });
+    }
+
+    // Deduct stock for pending items
+    await updateProductStock(order.pendingItems, 'decrease');
+
+    // Merge pending items into fulfilled items
+    const updatedFulfilledItems = [...order.fulfilledItems];
+    order.pendingItems.forEach(pendingItem => {
+      const existingIndex = updatedFulfilledItems.findIndex(
+        item => String(item.productId) === String(pendingItem.productId) && 
+                item.dimension === pendingItem.dimension
+      );
+      
+      if (existingIndex >= 0) {
+        // Merge quantities
+        updatedFulfilledItems[existingIndex].qty += pendingItem.qty;
+        updatedFulfilledItems[existingIndex].total += pendingItem.total;
+      } else {
+        // Add new item
+        updatedFulfilledItems.push(pendingItem);
+      }
+    });
+
+    // Update order
+    order.fulfilledItems = updatedFulfilledItems;
+    order.pendingItems = [];
+    order.isPartialOrder = false;
+    order.statusUpdatedBy = req.user.id;
+    order.statusUpdatedAt = new Date();
+
+    await order.save();
+
+    // Emit order update event
+    emitOrderUpdated(order, user);
+
+    res.json({ 
+      success: true, 
+      message: 'Partial order completed successfully',
+      order 
+    });
+  } catch (err) {
+    console.error('Error completing partial order:', err);
+    res.status(500).json({ message: err.message });
   }
 });
 

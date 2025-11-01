@@ -45,6 +45,11 @@ const orderSchema = new mongoose.Schema({
   cancelledBy: { type: String, default: null }, // User name who cancelled the order
   cancelledAt: { type: Date, default: null }, // When the order was cancelled
   cancellationReason: { type: String, default: null }, // Reason for cancellation
+  // Partial order fulfillment fields
+  isPartialOrder: { type: Boolean, default: false }, // Flag indicating if this is a partial order
+  fulfilledItems: { type: [orderItemSchema], default: [] }, // Items that have been delivered
+  pendingItems: { type: [orderItemSchema], default: [] }, // Items waiting to be delivered
+  originalOrderItems: { type: [orderItemSchema], default: [] }, // Original order items for reference
 });
 
 // Middleware to update status history
