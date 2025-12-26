@@ -74,21 +74,13 @@ router.get('/', verifyToken, async (req, res) => {
     }
 
     let orders;
-    const now = new Date();
-    const timeFilter = {
-      $or: [
-        { scheduledFor: { $exists: false } },
-        { scheduledFor: null },
-        { scheduledFor: { $lte: now } }
-      ]
-    };
     // Admin and Staff can see all orders
     if (['Admin', 'Staff'].includes(user.role)) {
-      orders = await Order.find(timeFilter);
+      orders = await Order.find();
     }
     // Executive can only see their own orders
     else if (user.role === 'Executive') {
-      orders = await Order.find({ createdBy: user.name, ...timeFilter });
+      orders = await Order.find({ createdBy: user.name });
     }
     else {
       return res.status(403).json({ message: 'Unauthorized access' });
@@ -187,7 +179,7 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    const { assignedTo, assignedToId, scheduledFor, orderItems } = req.body;
+    const { assignedTo, assignedToId, orderItems } = req.body;
     
     if (!assignedTo || !assignedToId) {
       return res.status(400).json({ message: 'Assigned To and Assigned To ID are required.' });
@@ -201,17 +193,6 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
     }
 
     const orderId = await generateOrderId();
-
-    let status = 'active';
-    let date = new Date();
-    let scheduledDate = null;
-    if (scheduledFor) {
-      scheduledDate = new Date(scheduledFor);
-      if (!isNaN(scheduledDate.getTime()) && scheduledDate > new Date()) {
-        status = 'scheduled';
-        date = scheduledDate;
-      }
-    }
 
     // Check if order should be marked as isWithout (assigned to Gaurav Miniyar)
     const isWithout = assignedToId === '685a4143374df5c794581187';
@@ -234,9 +215,8 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       assignedTo,
       assignedToId,
       orderId,
-      date,
-      scheduledFor: scheduledDate,
-      status,
+      date: new Date(),
+      status: 'active',
       createdBy: user.name, // Ensure createdBy is set to the current user's name
       isWithout // Set the isWithout field based on assignment
     });
@@ -348,100 +328,15 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
           });
         }
         
-        // Handle partial dispatch if dispatchItems are provided
-        if (req.body.dispatchItems && Array.isArray(req.body.dispatchItems)) {
-          const dispatchItems = req.body.dispatchItems;
-          
-          // Build items to dispatch with updated quantities
-          const itemsToDispatch = [];
-          const fulfilledItems = [];
-          const pendingItems = [];
-          
-          for (let i = 0; i < dispatchItems.length; i++) {
-            const dispatchItem = dispatchItems[i];
-            const originalItem = order.orderItems[i];
-            
-            if (!originalItem) continue;
-            
-            const dispatchQty = dispatchItem.dispatchQty || 0;
-            const originalQty = originalItem.qty;
-            
-            if (dispatchQty > 0) {
-              // Add to items to dispatch for stock validation
-              itemsToDispatch.push({
-                productId: originalItem.productId,
-                name: originalItem.name,
-                brandName: originalItem.brandName,
-                dimension: originalItem.dimension,
-                qty: dispatchQty,
-                price: originalItem.price,
-                total: originalItem.price * dispatchQty
-              });
-              
-              // Add to fulfilled items
-              fulfilledItems.push({
-                productId: originalItem.productId,
-                name: originalItem.name,
-                brandName: originalItem.brandName,
-                dimension: originalItem.dimension,
-                qty: dispatchQty,
-                price: originalItem.price,
-                total: originalItem.price * dispatchQty
-              });
-            }
-            
-            if (dispatchQty < originalQty) {
-              // Add remaining quantity to pending items
-              pendingItems.push({
-                productId: originalItem.productId,
-                name: originalItem.name,
-                brandName: originalItem.brandName,
-                dimension: originalItem.dimension,
-                qty: originalQty - dispatchQty,
-                price: originalItem.price,
-                total: originalItem.price * (originalQty - dispatchQty)
-              });
-            }
-          }
-          
-          // Validate and deduct stock only for dispatched quantities
-          const stockErrors = await validateStockAvailability(itemsToDispatch);
-          if (stockErrors.length > 0) {
-            return res.status(400).json({ 
-              message: 'Insufficient stock for some items',
-              stockErrors 
-            });
-          }
-          await updateProductStock(itemsToDispatch, 'decrease');
-          
-          // Check if this is a partial order
-          const isPartial = pendingItems.length > 0;
-          
-          if (isPartial) {
-            // Store original order items if not already stored
-            if (!order.originalOrderItems || order.originalOrderItems.length === 0) {
-              updateData.originalOrderItems = order.orderItems;
-            }
-            updateData.isPartialOrder = true;
-            updateData.fulfilledItems = fulfilledItems;
-            updateData.pendingItems = pendingItems;
-          } else {
-            // Full dispatch - clear partial order flags
-            updateData.isPartialOrder = false;
-            updateData.fulfilledItems = [];
-            updateData.pendingItems = [];
-          }
-        } else {
-          // No dispatch items provided, dispatch all
-          const stockErrors = await validateStockAvailability(order.orderItems);
-          if (stockErrors.length > 0) {
-            return res.status(400).json({ 
-              message: 'Insufficient stock for some items',
-              stockErrors 
-            });
-          }
-          await updateProductStock(order.orderItems, 'decrease');
+        // Validate stock availability and deduct stock for all order items
+        const stockErrors = await validateStockAvailability(order.orderItems);
+        if (stockErrors.length > 0) {
+          return res.status(400).json({ 
+            message: 'Insufficient stock for some items',
+            stockErrors 
+          });
         }
+        await updateProductStock(order.orderItems, 'decrease');
       }
     }
 
@@ -510,80 +405,6 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
   }
 });
 
-// Complete partial order - dispatch remaining items
-router.post('/complete-partial/:orderId', verifyToken, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    const order = await Order.findOne({ orderId: req.params.orderId });
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
-
-    if (!order.isPartialOrder) {
-      return res.status(400).json({ message: 'This is not a partial order' });
-    }
-
-    if (order.orderStatus !== 'Dispatched') {
-      return res.status(400).json({ message: 'Order must be in Dispatched status' });
-    }
-
-    // Validate stock for pending items
-    const stockErrors = await validateStockAvailability(order.pendingItems);
-    if (stockErrors.length > 0) {
-      return res.status(400).json({ 
-        message: 'Insufficient stock for pending items',
-        stockErrors 
-      });
-    }
-
-    // Deduct stock for pending items
-    await updateProductStock(order.pendingItems, 'decrease');
-
-    // Merge pending items into fulfilled items
-    const updatedFulfilledItems = [...order.fulfilledItems];
-    order.pendingItems.forEach(pendingItem => {
-      const existingIndex = updatedFulfilledItems.findIndex(
-        item => String(item.productId) === String(pendingItem.productId) && 
-                item.dimension === pendingItem.dimension
-      );
-      
-      if (existingIndex >= 0) {
-        // Merge quantities
-        updatedFulfilledItems[existingIndex].qty += pendingItem.qty;
-        updatedFulfilledItems[existingIndex].total += pendingItem.total;
-      } else {
-        // Add new item
-        updatedFulfilledItems.push(pendingItem);
-      }
-    });
-
-    // Update order
-    order.fulfilledItems = updatedFulfilledItems;
-    order.pendingItems = [];
-    order.isPartialOrder = false;
-    order.statusUpdatedBy = req.user.id;
-    order.statusUpdatedAt = new Date();
-
-    await order.save();
-
-    // Emit order update event
-    emitOrderUpdated(order, user);
-
-    res.json({ 
-      success: true, 
-      message: 'Partial order completed successfully',
-      order 
-    });
-  } catch (err) {
-    console.error('Error completing partial order:', err);
-    res.status(500).json({ message: err.message });
-  }
-});
-
 // Delete order - Admin only
 router.delete('/by-order-id/:orderId', verifyToken, isAdmin, async (req, res) => {
   try {
@@ -614,63 +435,6 @@ router.delete('/by-order-id/:orderId', verifyToken, isAdmin, async (req, res) =>
     
     res.json({ message: 'Order deleted successfully' });
   } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// Cancel order and restore stock - Admin and Staff only
-router.post('/cancel/:orderId', verifyToken, isStaffOrAdmin, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    const order = await Order.findOne({ orderId: req.params.orderId });
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
-
-    // Check if order can be cancelled (not already cancelled or completed)
-    if (order.status === 'cancelled') {
-      return res.status(400).json({ message: 'Order is already cancelled' });
-    }
-
-    if (order.orderStatus === 'Dispatched') {
-      return res.status(400).json({ message: 'Cannot cancel dispatched orders' });
-    }
-
-    // Restore stock quantities when order is cancelled
-    if (order.orderItems && order.orderItems.length > 0) {
-      await updateProductStock(order.orderItems, 'increase');
-    }
-
-    // Update order status to cancelled
-    const updatedOrder = await Order.findOneAndUpdate(
-      { orderId: req.params.orderId },
-      { 
-        status: 'cancelled',
-        orderStatus: 'Cancelled',
-        cancelledBy: user.name,
-        cancelledAt: new Date(),
-        cancellationReason: req.body.reason || 'Cancelled by admin'
-      },
-      { new: true }
-    );
-
-    // Emit WebSocket event for order cancellation
-    emitOrderUpdated(updatedOrder, {
-      id: req.user.id,
-      name: req.user.name,
-      role: req.user.role
-    });
-
-    res.json({ 
-      message: 'Order cancelled successfully',
-      order: updatedOrder
-    });
-  } catch (err) {
-    console.error('Order cancellation failed:', err);
     res.status(500).json({ message: err.message });
   }
 });
