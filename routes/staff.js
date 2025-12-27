@@ -7,7 +7,7 @@ const { emitStaffCreated, emitStaffUpdated, emitStaffDeleted } = require('../soc
 // Get all staff members
 router.get('/', verifyToken, async (req, res) => {
   try {
-    const staff = await User.find({ role: { $in: ['Admin', 'Staff', 'Executive'] } }).select('-password');
+    const staff = await User.find({ role: { $in: ['Admin', 'Staff', 'Executive', 'Inventory Manager'] } }).select('-password');
     res.json(staff);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -16,6 +16,14 @@ router.get('/', verifyToken, async (req, res) => {
 
 // Create new staff member - Admin only
 router.post('/', verifyToken, isAdmin, async (req, res) => {
+  // Only Admin can create Inventory Manager
+  if (req.body.role === 'Inventory Manager') {
+    const user = await User.findById(req.user.id);
+    if (!user || user.role !== 'Admin') {
+      return res.status(403).json({ message: 'Access denied. Only Admin can create Inventory Manager.' });
+    }
+  }
+  
   const staff = new User(req.body);
   try {
     const newStaff = await staff.save();

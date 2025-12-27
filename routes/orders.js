@@ -6,64 +6,7 @@ const Customer = require('../models/Customer');
 const Route = require('../models/Route');
 const Product = require('../models/Product');
 const { verifyToken, isAdmin, isStaffOrAdmin, canCreateOrders, canModifyOrders } = require('../middleware/auth');
-const { emitOrderCreated, emitOrderUpdated, emitOrderDeleted, emitProductUpdated } = require('../socket/events');
-
-// Stock management helper functions
-const validateStockAvailability = async (orderItems) => {
-  const stockErrors = [];
-  
-  for (const item of orderItems) {
-    if (!item.productId || !item.qty) continue;
-    
-    const product = await Product.findById(item.productId);
-    if (!product) {
-      stockErrors.push(`Product not found: ${item.name || item.productId}`);
-      continue;
-    }
-    
-    if (product.stockQuantity < item.qty) {
-      stockErrors.push(`Insufficient stock for ${product.name}: Available ${product.stockQuantity}, Required ${item.qty}`);
-    }
-  }
-  
-  return stockErrors;
-};
-
-const updateProductStock = async (orderItems, operation = 'decrease') => {
-  const updatedProducts = [];
-  
-  for (const item of orderItems) {
-    if (!item.productId || !item.qty) continue;
-    
-    const product = await Product.findById(item.productId);
-    if (!product) continue;
-    
-    const quantityChange = operation === 'decrease' ? -item.qty : item.qty;
-    const newStockQuantity = Math.max(0, product.stockQuantity + quantityChange);
-    
-    product.stockQuantity = newStockQuantity;
-    await product.save();
-    
-    updatedProducts.push(product);
-    
-    // Emit product update event for real-time updates
-    emitProductUpdated(product, {
-      id: 'system',
-      name: 'System',
-      role: 'System'
-    });
-  }
-  
-  return updatedProducts;
-};
-
-const checkLowStockAlerts = async (products) => {
-  const lowStockProducts = products.filter(product => 
-    product.stockQuantity <= product.lowStockThreshold
-  );
-  
-  return lowStockProducts;
-};
+const { emitOrderCreated, emitOrderUpdated, emitOrderDeleted } = require('../socket/events');
 
 // Get orders based on role
 router.get('/', verifyToken, async (req, res) => {
@@ -74,8 +17,8 @@ router.get('/', verifyToken, async (req, res) => {
     }
 
     let orders;
-    // Admin and Staff can see all orders
-    if (['Admin', 'Staff'].includes(user.role)) {
+    // Admin, Staff, and Inventory Manager can see all orders
+    if (['Admin', 'Staff', 'Inventory Manager'].includes(user.role)) {
       orders = await Order.find();
     }
     // Executive can only see their own orders
@@ -106,9 +49,13 @@ router.get('/by-order-id/:orderId', verifyToken, async (req, res) => {
       return res.status(404).json({ message: 'Order not found' });
     }
 
-    // Check if Executive is trying to access someone else's order
+    // Check permissions based on role
+    // Admin, Staff, and Inventory Manager can view all orders
     if (user.role === 'Executive' && order.createdBy !== user.name) {
       return res.status(403).json({ message: 'Access denied. You can only view orders created by you.' });
+    }
+    if (!['Admin', 'Staff', 'Inventory Manager', 'Executive'].includes(user.role)) {
+      return res.status(403).json({ message: 'Unauthorized access' });
     }
 
     res.json(order);
@@ -124,6 +71,29 @@ router.get('/assigned/:userId', verifyToken, async (req, res) => {
     const orders = await Order.find({ assignedToId: req.params.userId });
     res.json(orders);
   } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Get orders by status - for Inventory Manager to get "Inv Check" orders
+router.get('/by-status/:status', verifyToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const status = req.params.status;
+    
+    // Only allow Inventory Manager, Admin, and Staff to filter by status
+    if (!['Admin', 'Staff', 'Inventory Manager'].includes(user.role)) {
+      return res.status(403).json({ message: 'Unauthorized access' });
+    }
+
+    const orders = await Order.find({ orderStatus: status });
+    res.json(orders);
+  } catch (err) {
+    console.error('Error fetching orders by status:', err);
     res.status(500).json({ message: err.message });
   }
 });
@@ -283,7 +253,7 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
           message: 'Access denied. You can only update orders created by you.' 
         });
       }
-    } else if (!['Admin', 'Staff'].includes(user.role)) {
+    } else if (!['Admin', 'Staff', 'Inventory Manager'].includes(user.role)) {
       return res.status(403).json({ message: 'Unauthorized access' });
     }
 
@@ -305,8 +275,10 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
     if (req.body.orderStatus && req.body.orderStatus !== order.orderStatus) {
       const validTransitions = {
         'Pending': ['DC'],
-        'DC': ['Invoice', 'Dispatched'], // Allow both Invoice and Dispatched from DC
-        'Invoice': ['Dispatched'],
+        'DC': ['Invoice'], // Only Invoice allowed from DC
+        'Invoice': ['Inv Check'],
+        'Inv Check': ['Inv Checked'], // Only Inventory Manager can do this transition
+        'Inv Checked': ['Dispatched'],
         'Dispatched': [] // Final state, no further transitions
       };
 
@@ -320,6 +292,27 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
         });
       }
 
+      // Only Inventory Manager can change from 'Inv Check' to 'Inv Checked'
+      if (currentStatus === 'Inv Check' && newStatus === 'Inv Checked') {
+        if (user.role !== 'Inventory Manager') {
+          return res.status(403).json({
+            message: 'Only Inventory Manager can mark orders as Inventory Checked'
+          });
+        }
+
+        // Deduct stock when Inventory Manager marks order as Inv Checked
+        for (const item of order.orderItems) {
+          if (!item.productId) continue;
+          
+          const product = await Product.findById(item.productId);
+          if (!product) continue;
+          
+          // Deduct the ordered quantity from stock
+          const newStock = Math.max(0, product.stockQuantity - item.qty);
+          await Product.findByIdAndUpdate(item.productId, { stockQuantity: newStock });
+        }
+      }
+
       // Additional validation for Dispatched status
       if (newStatus === 'Dispatched') {
         if (!req.body.deliveryPartner) {
@@ -327,40 +320,11 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
             message: 'Cannot mark as Dispatched: Please select a delivery partner'
           });
         }
-        
-        // Validate stock availability and deduct stock for all order items
-        const stockErrors = await validateStockAvailability(order.orderItems);
-        if (stockErrors.length > 0) {
-          return res.status(400).json({ 
-            message: 'Insufficient stock for some items',
-            stockErrors 
-          });
-        }
-        await updateProductStock(order.orderItems, 'decrease');
       }
     }
 
-    // Handle stock management for regular order updates
-    let stockUpdated = false;
-    let updatedProducts = [];
-
-    // If orderItems are present in update, handle stock changes
+    // If orderItems are present in update, enrich with brandName
     if (Array.isArray(req.body.orderItems)) {
-      // Validate stock availability for new quantities
-      const stockErrors = await validateStockAvailability(req.body.orderItems);
-      if (stockErrors.length > 0) {
-        return res.status(400).json({ 
-          message: 'Insufficient stock for some products',
-          stockErrors 
-        });
-      }
-
-      // Restore stock from original order items
-      if (order.orderItems && order.orderItems.length > 0) {
-        await updateProductStock(order.orderItems, 'increase');
-      }
-
-      // Decrease stock for new order items
       let enrichedUpdateItems = [...req.body.orderItems];
       if (enrichedUpdateItems.length > 0) {
         const productIds = enrichedUpdateItems.map((it) => it.productId).filter(Boolean);
@@ -370,9 +334,6 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
           ...it,
           brandName: it.brandName || idToBrand.get(String(it.productId)) || null,
         }));
-        
-        updatedProducts = await updateProductStock(enrichedUpdateItems, 'decrease');
-        stockUpdated = true;
       }
       updateData.orderItems = enrichedUpdateItems;
     }
@@ -382,14 +343,6 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
       updateData,
       { new: true }
     );
-
-    // Check for low stock alerts if stock was updated
-    if (stockUpdated && updatedProducts.length > 0) {
-      const lowStockProducts = await checkLowStockAlerts(updatedProducts);
-      if (lowStockProducts.length > 0) {
-        console.log('Low stock alert:', lowStockProducts.map(p => `${p.name}: ${p.stockQuantity}/${p.lowStockThreshold}`));
-      }
-    }
 
     // Emit WebSocket event for order update
     emitOrderUpdated(updatedOrder, {
@@ -413,11 +366,6 @@ router.delete('/by-order-id/:orderId', verifyToken, isAdmin, async (req, res) =>
     
     if (!orderToDelete) {
       return res.status(404).json({ message: 'Order not found' });
-    }
-
-    // Restore stock quantities when order is deleted
-    if (orderToDelete.orderItems && orderToDelete.orderItems.length > 0) {
-      await updateProductStock(orderToDelete.orderItems, 'increase');
     }
     
     const order = await Order.findOneAndDelete({ orderId: req.params.orderId });

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Product = require('../models/Product');
-const { verifyToken, isAdmin, canCreateProducts, canModifyProducts } = require('../middleware/auth');
+const { verifyToken, canCreateProducts, canModifyProducts } = require('../middleware/auth');
 const { emitProductCreated, emitProductUpdated, emitProductDeleted } = require('../socket/events');
 const multer = require('multer');
 const { parse } = require('csv-parse/sync');
@@ -33,7 +33,7 @@ router.get('/brands', verifyToken, async (req, res) => {
   }
 });
 
-// Create new product - Admin, Staff, and Executive can create
+// Create new product - Admin, Staff, Executive, and Inventory Manager can create
 router.post('/', verifyToken, canCreateProducts, async (req, res) => {
   const product = new Product(req.body);
   try {
@@ -52,7 +52,7 @@ router.post('/', verifyToken, canCreateProducts, async (req, res) => {
   }
 });
 
-// Update product - Admin and Staff only
+// Update product - Admin, Staff, and Inventory Manager
 router.put('/:id', verifyToken, canModifyProducts, async (req, res) => {
   try {
     const updatedProduct = await Product.findByIdAndUpdate(
@@ -74,8 +74,8 @@ router.put('/:id', verifyToken, canModifyProducts, async (req, res) => {
   }
 });
 
-// Delete product - Admin only
-router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
+// Delete product - Admin or Inventory Manager
+router.delete('/:id', verifyToken, canModifyProducts, async (req, res) => {
   try {
     // Get product details before deletion for WebSocket event
     const productToDelete = await Product.findById(req.params.id);
@@ -101,7 +101,7 @@ router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// CSV Import Route - Admin, Staff, and Executive can import (same as create)
+// CSV Import Route - Admin, Staff, Executive, and Inventory Manager can import (same as create)
 router.post('/import', verifyToken, canCreateProducts, upload.single('file'), async (req, res) => {
   try {
     if (!req.file || !req.file.buffer) {
