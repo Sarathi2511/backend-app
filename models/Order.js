@@ -29,12 +29,10 @@ const orderSchema = new mongoose.Schema({
   paymentRecievedBy: { type: String, default: null }, // Staff name who received payment
   statusUpdatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // User ID who last updated the status
   statusUpdatedAt: { type: Date }, // When the status was last updated
-  // Status history to track changes
   statusHistory: [{
     status: { type: String, required: true },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     updatedAt: { type: Date, default: Date.now },
-    note: String
   }],
   isWithout: { type: Boolean, default: false }, // Special flag for orders assigned to Gaurav Miniyar
   additionalNotes: { type: String, default: '' }, // Additional notes for the order
@@ -43,6 +41,9 @@ const orderSchema = new mongoose.Schema({
 // Middleware to update status history
 orderSchema.pre('save', function(next) {
   if (this.isModified('orderStatus')) {
+    if (!this.statusHistory) {
+      this.statusHistory = [];
+    }
     this.statusHistory.push({
       status: this.orderStatus,
       updatedBy: this.statusUpdatedBy,

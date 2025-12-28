@@ -19,11 +19,11 @@ router.get('/', verifyToken, async (req, res) => {
     let orders;
     // Admin, Staff, and Inventory Manager can see all orders
     if (['Admin', 'Staff', 'Inventory Manager'].includes(user.role)) {
-      orders = await Order.find();
+      orders = await Order.find().populate('statusUpdatedBy', 'name').populate('statusHistory.updatedBy', 'name');
     }
     // Executive can only see their own orders
     else if (user.role === 'Executive') {
-      orders = await Order.find({ createdBy: user.name });
+      orders = await Order.find({ createdBy: user.name }).populate('statusUpdatedBy', 'name').populate('statusHistory.updatedBy', 'name');
     }
     else {
       return res.status(403).json({ message: 'Unauthorized access' });
@@ -44,7 +44,7 @@ router.get('/by-order-id/:orderId', verifyToken, async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    const order = await Order.findOne({ orderId: req.params.orderId });
+    const order = await Order.findOne({ orderId: req.params.orderId }).populate('statusUpdatedBy', 'name').populate('statusHistory.updatedBy', 'name');
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
@@ -68,7 +68,7 @@ router.get('/by-order-id/:orderId', verifyToken, async (req, res) => {
 // Get all orders assigned to a specific user by assignedToId
 router.get('/assigned/:userId', verifyToken, async (req, res) => {
   try {
-    const orders = await Order.find({ assignedToId: req.params.userId });
+    const orders = await Order.find({ assignedToId: req.params.userId }).populate('statusUpdatedBy', 'name').populate('statusHistory.updatedBy', 'name');
     res.json(orders);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -90,7 +90,7 @@ router.get('/by-status/:status', verifyToken, async (req, res) => {
       return res.status(403).json({ message: 'Unauthorized access' });
     }
 
-    const orders = await Order.find({ orderStatus: status });
+    const orders = await Order.find({ orderStatus: status }).populate('statusUpdatedBy', 'name').populate('statusHistory.updatedBy', 'name');
     res.json(orders);
   } catch (err) {
     console.error('Error fetching orders by status:', err);
@@ -188,44 +188,56 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       date: new Date(),
       status: 'active',
       createdBy: user.name, // Ensure createdBy is set to the current user's name
-      isWithout // Set the isWithout field based on assignment
+      isWithout, // Set the isWithout field based on assignment
+      statusUpdatedBy: req.user.id, // Set who created/updated the initial status
+      statusUpdatedAt: new Date(), // Set when the initial status was set
+      statusHistory: [{
+        status: req.body.orderStatus || 'Pending',
+        updatedBy: req.user.id,
+        updatedAt: new Date()
+      }]
     });
     
     const newOrder = await order.save();
     
+    // Populate statusHistory for response
+    const populatedOrder = await Order.findById(newOrder._id)
+      .populate('statusUpdatedBy', 'name')
+      .populate('statusHistory.updatedBy', 'name');
+    
     // Emit WebSocket event for order creation
-    emitOrderCreated(newOrder, {
+    emitOrderCreated(populatedOrder, {
       id: req.user.id,
       name: req.user.name,
       role: req.user.role
     });
     
     // After order is created, upsert customer name
-    if (newOrder.customerName) {
+    if (populatedOrder.customerName) {
       await Customer.findOneAndUpdate(
-        { name: newOrder.customerName },
+        { name: populatedOrder.customerName },
         {
-          name: newOrder.customerName,
-          phone: newOrder.customerPhone || '',
-          address: newOrder.customerAddress || ''
+          name: populatedOrder.customerName,
+          phone: populatedOrder.customerPhone || '',
+          address: populatedOrder.customerAddress || ''
         },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
     }
 
     // After order is created, upsert order route
-    if (newOrder.orderRoute) {
+    if (populatedOrder.orderRoute) {
       await Route.findOneAndUpdate(
-        { name: newOrder.orderRoute },
+        { name: populatedOrder.orderRoute },
         {
-          name: newOrder.orderRoute,
+          name: populatedOrder.orderRoute,
           createdBy: req.user.id
         },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
     }
 
-    res.status(201).json(newOrder);
+    res.status(201).json(populatedOrder);
   } catch (err) {
     console.error('Order creation failed:', err);
     res.status(400).json({ message: err.message });
@@ -261,15 +273,27 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
     const isWithout = req.body.assignedToId === '685a4143374df5c794581187';
 
     // Prepare update data
+    const isStatusChanging = req.body.orderStatus && req.body.orderStatus !== order.orderStatus;
     let updateData = {
       ...req.body, // additionalNotes will be included if present
       isWithout, // Set the isWithout field based on assignment
       // If status is being updated, record who did it
-      ...(req.body.orderStatus !== order.orderStatus && {
+      ...(isStatusChanging && {
         statusUpdatedBy: req.user.id,
         statusUpdatedAt: new Date()
       })
     };
+    
+    // Remove orderStatus from updateData if status is changing (we'll update it with $set and add to history)
+    let statusHistoryUpdate = null;
+    if (isStatusChanging) {
+      statusHistoryUpdate = {
+        status: req.body.orderStatus,
+        updatedBy: req.user.id,
+        updatedAt: new Date()
+      };
+      // We'll handle statusHistory update separately using $push
+    }
 
     // Validate status transition - Flexible workflow enforcement
     if (req.body.orderStatus && req.body.orderStatus !== order.orderStatus) {
@@ -338,11 +362,20 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
       updateData.orderItems = enrichedUpdateItems;
     }
 
+    // Build final update object with $push for statusHistory if status is changing
+    let finalUpdate = updateData;
+    if (statusHistoryUpdate) {
+      finalUpdate = {
+        ...updateData,
+        $push: { statusHistory: statusHistoryUpdate }
+      };
+    }
+    
     const updatedOrder = await Order.findOneAndUpdate(
       { orderId: req.params.orderId },
-      updateData,
+      finalUpdate,
       { new: true }
-    );
+    ).populate('statusUpdatedBy', 'name').populate('statusHistory.updatedBy', 'name');
 
     // Emit WebSocket event for order update
     emitOrderUpdated(updatedOrder, {
