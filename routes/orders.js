@@ -265,7 +265,12 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
           message: 'Access denied. You can only update orders created by you.' 
         });
       }
-    } else if (!['Admin', 'Staff', 'Inventory Manager'].includes(user.role)) {
+    } else if (user.role === 'Inventory Manager') {
+      // Inventory Manager can only view orders, not update them
+      return res.status(403).json({ 
+        message: 'Access denied. Inventory Manager can only view orders.' 
+      });
+    } else if (!['Admin', 'Staff'].includes(user.role)) {
       return res.status(403).json({ message: 'Unauthorized access' });
     }
 
@@ -299,10 +304,8 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
     if (req.body.orderStatus && req.body.orderStatus !== order.orderStatus) {
       const validTransitions = {
         'Pending': ['DC'],
-        'DC': ['Invoice'], // Only Invoice allowed from DC
-        'Invoice': ['Inv Check'],
-        'Inv Check': ['Inv Checked'], // Only Inventory Manager can do this transition
-        'Inv Checked': ['Dispatched'],
+        'DC': ['Invoice'],
+        'Invoice': ['Dispatched'],
         'Dispatched': [] // Final state, no further transitions
       };
 
@@ -314,27 +317,6 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
         return res.status(400).json({
           message: `Invalid status transition: Cannot change from '${currentStatus}' to '${newStatus}'. Allowed transitions: ${allowedNextStatuses.join(', ') || 'None (final state)'}`
         });
-      }
-
-      // Only Inventory Manager can change from 'Inv Check' to 'Inv Checked'
-      if (currentStatus === 'Inv Check' && newStatus === 'Inv Checked') {
-        if (user.role !== 'Inventory Manager') {
-          return res.status(403).json({
-            message: 'Only Inventory Manager can mark orders as Inventory Checked'
-          });
-        }
-
-        // Deduct stock when Inventory Manager marks order as Inv Checked
-        for (const item of order.orderItems) {
-          if (!item.productId) continue;
-          
-          const product = await Product.findById(item.productId);
-          if (!product) continue;
-          
-          // Deduct the ordered quantity from stock
-          const newStock = Math.max(0, product.stockQuantity - item.qty);
-          await Product.findByIdAndUpdate(item.productId, { stockQuantity: newStock });
-        }
       }
 
       // Additional validation for Dispatched status

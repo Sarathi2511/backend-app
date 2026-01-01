@@ -16,7 +16,7 @@ const orderSchema = new mongoose.Schema({
   status: { type: String, enum: ['active', 'completed'], default: 'active' }, // New status field
   customerName: { type: String, required: true },
   orderRoute: { type: String, required: true }, // New field for order route
-  orderStatus: { type: String, required: true, enum: ['Pending', 'DC', 'Invoice', 'Inv Check', 'Inv Checked', 'Dispatched'] },
+  orderStatus: { type: String, required: true, enum: ['Pending', 'DC', 'Invoice', 'Dispatched'] },
   paymentCondition: { type: String, required: true },
   assignedTo: { type: String, required: true },
   assignedToId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
