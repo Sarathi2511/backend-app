@@ -451,9 +451,11 @@ router.get('/dispatch-confirmation/:orderId', verifyToken, async (req, res) => {
       if (!product) continue;
       
       itemsWithStock.push({
-        ...item,
+        productId: item.productId,
         // Ensure we have the correct item name from product if missing
         name: item.name || product.name,
+        dimension: item.dimension || '',
+        brandName: item.brandName || product.brandName || '',
         // Ensure we have all required fields
         qty: item.qty || 0,
         price: item.price || 0,
@@ -473,6 +475,277 @@ router.get('/dispatch-confirmation/:orderId', verifyToken, async (req, res) => {
     });
   } catch (err) {
     console.error('Dispatch confirmation data failed:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Dispatch order with partial delivery support and stock deduction
+router.post('/dispatch/:orderId', verifyToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Only Admin and Staff can dispatch orders
+    if (!['Admin', 'Staff'].includes(user.role)) {
+      return res.status(403).json({ message: 'Unauthorized to dispatch orders' });
+    }
+
+    const order = await Order.findOne({ orderId: req.params.orderId });
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    // Validate order is in Invoice status
+    if (order.orderStatus !== 'Invoice') {
+      return res.status(400).json({ 
+        message: `Cannot dispatch order. Order must be in 'Invoice' status. Current status: ${order.orderStatus}` 
+      });
+    }
+
+    const { deliveryPartner, deliveredItems } = req.body;
+
+    if (!deliveryPartner) {
+      return res.status(400).json({ message: 'Delivery partner is required' });
+    }
+
+    if (!deliveredItems || !Array.isArray(deliveredItems)) {
+      return res.status(400).json({ message: 'Delivered items data is required' });
+    }
+
+    // Validate and process each delivered item
+    const updatedOrderItems = [];
+    const stockUpdates = [];
+    let isPartialDelivery = false;
+
+    for (const orderItem of order.orderItems) {
+      const deliveredItem = deliveredItems.find(
+        di => di.productId.toString() === orderItem.productId.toString()
+      );
+
+      if (!deliveredItem) {
+        // Item not included in delivery
+        updatedOrderItems.push({
+          ...orderItem.toObject(),
+          deliveredQty: 0,
+          isDelivered: false
+        });
+        isPartialDelivery = true;
+        continue;
+      }
+
+      const deliveredQty = deliveredItem.deliveredQty || 0;
+      const isDelivered = deliveredItem.isDelivered || false;
+
+      // Validate delivered quantity
+      if (deliveredQty < 0) {
+        return res.status(400).json({ 
+          message: `Invalid delivered quantity for ${orderItem.name}. Quantity cannot be negative.` 
+        });
+      }
+
+      if (deliveredQty > orderItem.qty) {
+        return res.status(400).json({ 
+          message: `Delivered quantity for ${orderItem.name} (${deliveredQty}) cannot exceed ordered quantity (${orderItem.qty}).` 
+        });
+      }
+
+      // Check if this results in partial delivery
+      if (!isDelivered || deliveredQty < orderItem.qty) {
+        isPartialDelivery = true;
+      }
+
+      // If item is marked as delivered, validate stock and prepare update
+      if (isDelivered && deliveredQty > 0) {
+        const product = await Product.findById(orderItem.productId);
+        if (!product) {
+          return res.status(400).json({ 
+            message: `Product not found for ${orderItem.name}` 
+          });
+        }
+
+        if (product.stockQuantity < deliveredQty) {
+          return res.status(400).json({ 
+            message: `Insufficient stock for ${orderItem.name}. Available: ${product.stockQuantity}, Requested: ${deliveredQty}` 
+          });
+        }
+
+        // Queue stock update
+        stockUpdates.push({
+          productId: orderItem.productId,
+          deductQty: deliveredQty
+        });
+      }
+
+      updatedOrderItems.push({
+        ...orderItem.toObject(),
+        deliveredQty: isDelivered ? deliveredQty : 0,
+        isDelivered: isDelivered
+      });
+    }
+
+    // Perform stock deductions
+    for (const stockUpdate of stockUpdates) {
+      await Product.findByIdAndUpdate(
+        stockUpdate.productId,
+        { $inc: { stockQuantity: -stockUpdate.deductQty } }
+      );
+    }
+
+    // Update order with dispatch information
+    const updateData = {
+      orderStatus: 'Dispatched',
+      deliveryPartner,
+      orderItems: updatedOrderItems,
+      isPartialDelivery,
+      dispatchedAt: new Date(),
+      statusUpdatedBy: req.user.id,
+      statusUpdatedAt: new Date(),
+      $push: {
+        statusHistory: {
+          status: 'Dispatched',
+          updatedBy: req.user.id,
+          updatedAt: new Date()
+        }
+      }
+    };
+
+    const updatedOrder = await Order.findOneAndUpdate(
+      { orderId: req.params.orderId },
+      updateData,
+      { new: true }
+    ).populate('statusUpdatedBy', 'name').populate('statusHistory.updatedBy', 'name');
+
+    // Emit WebSocket event for order update
+    emitOrderUpdated(updatedOrder, {
+      id: req.user.id,
+      name: req.user.name,
+      role: req.user.role
+    });
+
+    res.json({
+      message: isPartialDelivery ? 'Order dispatched with partial delivery' : 'Order dispatched successfully',
+      order: updatedOrder,
+      stockDeducted: stockUpdates.map(s => ({
+        productId: s.productId,
+        deductedQty: s.deductQty
+      }))
+    });
+  } catch (err) {
+    console.error('Order dispatch failed:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Complete order - deduct remaining stock for partially dispatched orders
+router.post('/complete/:orderId', verifyToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Only Admin and Staff can complete orders
+    if (!['Admin', 'Staff'].includes(user.role)) {
+      return res.status(403).json({ message: 'Unauthorized to complete orders' });
+    }
+
+    const order = await Order.findOne({ orderId: req.params.orderId });
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    // Validate order is dispatched and has partial delivery
+    if (order.orderStatus !== 'Dispatched') {
+      return res.status(400).json({ 
+        message: `Cannot complete order. Order must be in 'Dispatched' status. Current status: ${order.orderStatus}` 
+      });
+    }
+
+    if (!order.isPartialDelivery) {
+      return res.status(400).json({ 
+        message: 'Order is already fully dispatched. Nothing to complete.' 
+      });
+    }
+
+    // Calculate and deduct remaining stock for each item
+    const stockUpdates = [];
+    const updatedOrderItems = [];
+
+    for (const orderItem of order.orderItems) {
+      const deliveredQty = orderItem.deliveredQty || 0;
+      const remainingQty = orderItem.qty - deliveredQty;
+
+      // Skip items that were fully delivered
+      if (remainingQty <= 0) {
+        updatedOrderItems.push(orderItem.toObject());
+        continue;
+      }
+
+      // Validate stock availability for remaining quantity
+      const product = await Product.findById(orderItem.productId);
+      if (!product) {
+        return res.status(400).json({ 
+          message: `Product not found for ${orderItem.name}` 
+        });
+      }
+
+      if (product.stockQuantity < remainingQty) {
+        return res.status(400).json({ 
+          message: `Insufficient stock for ${orderItem.name}. Available: ${product.stockQuantity}, Required: ${remainingQty}` 
+        });
+      }
+
+      // Queue stock update for remaining quantity
+      stockUpdates.push({
+        productId: orderItem.productId,
+        deductQty: remainingQty
+      });
+
+      // Update order item to reflect full delivery
+      updatedOrderItems.push({
+        ...orderItem.toObject(),
+        deliveredQty: orderItem.qty, // Set to full quantity
+        isDelivered: true // Mark as fully delivered
+      });
+    }
+
+    // Perform stock deductions
+    for (const stockUpdate of stockUpdates) {
+      await Product.findByIdAndUpdate(
+        stockUpdate.productId,
+        { $inc: { stockQuantity: -stockUpdate.deductQty } }
+      );
+    }
+
+    // Update order - mark as fully dispatched
+    const updatedOrder = await Order.findOneAndUpdate(
+      { orderId: req.params.orderId },
+      {
+        orderItems: updatedOrderItems,
+        isPartialDelivery: false, // Mark as fully dispatched
+      },
+      { new: true }
+    ).populate('statusUpdatedBy', 'name').populate('statusHistory.updatedBy', 'name');
+
+    // Emit WebSocket event for order update
+    emitOrderUpdated(updatedOrder, {
+      id: req.user.id,
+      name: req.user.name,
+      role: req.user.role
+    });
+
+    res.json({
+      message: 'Order completed successfully. Remaining stock has been deducted.',
+      order: updatedOrder,
+      stockDeducted: stockUpdates.map(s => ({
+        productId: s.productId,
+        deductedQty: s.deductQty
+      }))
+    });
+  } catch (err) {
+    console.error('Order completion failed:', err);
     res.status(500).json({ message: err.message });
   }
 });

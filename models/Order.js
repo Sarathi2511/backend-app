@@ -8,6 +8,9 @@ const orderItemSchema = new mongoose.Schema({
   qty: { type: Number, required: true },
   price: { type: Number, required: true },
   total: { type: Number, required: true },
+  // Partial delivery fields
+  deliveredQty: { type: Number, default: null }, // Actual quantity delivered (null = not yet dispatched)
+  isDelivered: { type: Boolean, default: false }, // Whether this item was included in dispatch
 }, { _id: false });
 
 const orderSchema = new mongoose.Schema({
@@ -36,6 +39,9 @@ const orderSchema = new mongoose.Schema({
   }],
   isWithout: { type: Boolean, default: false }, // Special flag for orders assigned to Gaurav Miniyar
   additionalNotes: { type: String, default: '' }, // Additional notes for the order
+  // Partial delivery tracking
+  isPartialDelivery: { type: Boolean, default: false }, // Whether this order had partial delivery
+  dispatchedAt: { type: Date }, // When the order was dispatched
 });
 
 // Middleware to update status history
