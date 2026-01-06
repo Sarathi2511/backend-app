@@ -36,16 +36,14 @@ const ordersRouter = require('./routes/orders');
 const productsRouter = require('./routes/products');
 const staffRouter = require('./routes/staff');
 const customersRouter = require('./routes/customers');
+const notificationsRouter = require('./routes/notifications');
 
 app.use('/api/login', loginRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/products', productsRouter);
 app.use('/api/staff', staffRouter);
 app.use('/api/customers', customersRouter);
-
-// Initialize Socket.IO
-const { initializeSocket } = require('./socket');
-initializeSocket(server);
+app.use('/api/notifications', notificationsRouter);
 
 // Test endpoint to verify server is running
 app.get('/api/test', (req, res) => {

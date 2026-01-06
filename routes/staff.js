@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 const { verifyToken, isAdmin } = require('../middleware/auth');
-const { emitStaffCreated, emitStaffUpdated, emitStaffDeleted } = require('../socket/events');
+const { sendNotificationWithRetry } = require('../services/notificationService');
 
 // Get all staff members
 router.get('/', verifyToken, async (req, res) => {
@@ -29,12 +29,13 @@ router.post('/', verifyToken, isAdmin, async (req, res) => {
     const newStaff = await staff.save();
     const { password, ...staffWithoutPassword } = newStaff.toObject();
     
-    // Emit WebSocket event for staff creation
-    emitStaffCreated(staffWithoutPassword, {
-      id: req.user.id,
-      name: req.user.name,
-      role: req.user.role
-    });
+    // Send push notification
+    const user = await User.findById(req.user.id);
+    sendNotificationWithRetry('staff_created', {
+      staffId: newStaff._id.toString(),
+      staffName: newStaff.name,
+      role: newStaff.role,
+    }).catch(err => console.error('Error sending staff_created notification:', err));
     
     res.status(201).json(staffWithoutPassword);
   } catch (err) {
@@ -51,12 +52,11 @@ router.put('/:id', verifyToken, isAdmin, async (req, res) => {
       { new: true }
     ).select('-password');
     
-    // Emit WebSocket event for staff update
-    emitStaffUpdated(updatedStaff, {
-      id: req.user.id,
-      name: req.user.name,
-      role: req.user.role
-    });
+    // Send push notification
+    sendNotificationWithRetry('staff_updated', {
+      staffId: updatedStaff._id.toString(),
+      staffName: updatedStaff.name,
+    }).catch(err => console.error('Error sending staff_updated notification:', err));
     
     res.json(updatedStaff);
   } catch (err) {
@@ -67,23 +67,19 @@ router.put('/:id', verifyToken, isAdmin, async (req, res) => {
 // Delete staff member - Admin only
 router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
   try {
-    // Get staff details before deletion for WebSocket event
     const staffToDelete = await User.findById(req.params.id);
     
+    if (!staffToDelete) {
+      return res.status(404).json({ message: 'Staff member not found' });
+    }
+
     await User.findByIdAndDelete(req.params.id);
     
-    // Emit WebSocket event for staff deletion
-    if (staffToDelete) {
-      emitStaffDeleted(
-        staffToDelete._id,
-        staffToDelete.name,
-        {
-          id: req.user.id,
-          name: req.user.name,
-          role: req.user.role
-        }
-      );
-    }
+    // Send push notification
+    sendNotificationWithRetry('staff_deleted', {
+      staffId: staffToDelete._id.toString(),
+      staffName: staffToDelete.name,
+    }).catch(err => console.error('Error sending staff_deleted notification:', err));
     
     res.json({ message: 'Staff member deleted successfully' });
   } catch (err) {

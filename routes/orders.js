@@ -6,7 +6,7 @@ const Customer = require('../models/Customer');
 const Route = require('../models/Route');
 const Product = require('../models/Product');
 const { verifyToken, isAdmin, isStaffOrAdmin, canCreateOrders, canModifyOrders } = require('../middleware/auth');
-const { emitOrderCreated, emitOrderUpdated, emitOrderDeleted } = require('../socket/events');
+const { sendNotificationWithRetry } = require('../services/notificationService');
 
 // Get orders based on role
 router.get('/', verifyToken, async (req, res) => {
@@ -205,13 +205,6 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
       .populate('statusUpdatedBy', 'name')
       .populate('statusHistory.updatedBy', 'name');
     
-    // Emit WebSocket event for order creation
-    emitOrderCreated(populatedOrder, {
-      id: req.user.id,
-      name: req.user.name,
-      role: req.user.role
-    });
-    
     // After order is created, upsert customer name
     if (populatedOrder.customerName) {
       await Customer.findOneAndUpdate(
@@ -236,6 +229,22 @@ router.post('/', verifyToken, canCreateOrders, async (req, res) => {
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
     }
+
+    // Send push notifications
+    // Notify assigned user
+    sendNotificationWithRetry('order_assigned_to_me', {
+      orderId: populatedOrder.orderId,
+      customerName: populatedOrder.customerName,
+    }, {
+      assignedToId: populatedOrder.assignedToId,
+    }).catch(err => console.error('Error sending order_assigned notification:', err));
+
+    // Notify Admin, Staff, Inventory Manager
+    sendNotificationWithRetry('order_created', {
+      orderId: populatedOrder.orderId,
+      customerName: populatedOrder.customerName,
+      createdBy: user.name,
+    }).catch(err => console.error('Error sending order_created notification:', err));
 
     res.status(201).json(populatedOrder);
   } catch (err) {
@@ -359,12 +368,45 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
       { new: true }
     ).populate('statusUpdatedBy', 'name').populate('statusHistory.updatedBy', 'name');
 
-    // Emit WebSocket event for order update
-    emitOrderUpdated(updatedOrder, {
-      id: req.user.id,
-      name: req.user.name,
-      role: req.user.role
-    });
+    // Send push notifications for status changes
+    if (isStatusChanging) {
+      const oldStatus = order.orderStatus;
+      const newStatus = req.body.orderStatus;
+      
+      // Determine notification type based on status transition
+      let notificationType = 'order_status_updated';
+      if (oldStatus === 'Pending' && newStatus === 'DC') {
+        notificationType = 'order_status_pending_to_dc';
+      } else if (oldStatus === 'DC' && newStatus === 'Invoice') {
+        notificationType = 'order_status_dc_to_invoice';
+      } else if (oldStatus === 'Invoice' && newStatus === 'Dispatched') {
+        notificationType = 'order_status_invoice_to_dispatched';
+      }
+
+      sendNotificationWithRetry(notificationType, {
+        orderId: updatedOrder.orderId,
+        customerName: updatedOrder.customerName,
+        newStatus: newStatus,
+        deliveryPartner: updatedOrder.deliveryPartner,
+      }, {
+        assignedToId: updatedOrder.assignedToId,
+      }).catch(err => console.error('Error sending order status notification:', err));
+    }
+
+    // Check if order was reassigned
+    if (req.body.assignedToId && req.body.assignedToId.toString() !== order.assignedToId.toString()) {
+      const previousAssignedUser = await User.findById(order.assignedToId).select('name');
+      const newAssignedUser = await User.findById(req.body.assignedToId).select('name');
+      
+      sendNotificationWithRetry('order_reassigned', {
+        orderId: updatedOrder.orderId,
+        customerName: updatedOrder.customerName,
+        newAssignee: newAssignedUser?.name || 'Unknown',
+      }, {
+        newAssignedToId: req.body.assignedToId,
+        previousAssignedToId: order.assignedToId,
+      }).catch(err => console.error('Error sending order_reassigned notification:', err));
+    }
 
     res.json(updatedOrder);
   } catch (err) {
@@ -376,25 +418,28 @@ router.put('/by-order-id/:orderId', verifyToken, async (req, res) => {
 // Delete order - Admin only
 router.delete('/by-order-id/:orderId', verifyToken, isAdmin, async (req, res) => {
   try {
-    // Get order details before deletion for WebSocket event
-    const orderToDelete = await Order.findOne({ orderId: req.params.orderId });
+    const order = await Order.findOne({ orderId: req.params.orderId });
     
-    if (!orderToDelete) {
+    if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
+
+    // Get creator user ID if exists
+    const creator = await User.findOne({ name: order.createdBy }).select('_id');
+    const creatorId = creator ? creator._id : null;
+
+    await Order.findOneAndDelete({ orderId: req.params.orderId });
     
-    const order = await Order.findOneAndDelete({ orderId: req.params.orderId });
-    
-    // Emit WebSocket event for order deletion
-    emitOrderDeleted(
-      orderToDelete.orderId,
-      orderToDelete.customerName || 'Order',
-      {
-        id: req.user.id,
-        name: req.user.name,
-        role: req.user.role
-      }
-    );
+    // Send push notification
+    const user = await User.findById(req.user.id);
+    sendNotificationWithRetry('order_deleted', {
+      orderId: order.orderId,
+      customerName: order.customerName || 'Order',
+      deletedBy: user?.name || 'Admin',
+    }, {
+      assignedToId: order.assignedToId,
+      createdById: creatorId,
+    }).catch(err => console.error('Error sending order_deleted notification:', err));
     
     res.json({ message: 'Order deleted successfully' });
   } catch (err) {
@@ -617,12 +662,14 @@ router.post('/dispatch/:orderId', verifyToken, async (req, res) => {
       { new: true }
     ).populate('statusUpdatedBy', 'name').populate('statusHistory.updatedBy', 'name');
 
-    // Emit WebSocket event for order update
-    emitOrderUpdated(updatedOrder, {
-      id: req.user.id,
-      name: req.user.name,
-      role: req.user.role
-    });
+    // Send push notification for dispatch
+    sendNotificationWithRetry('order_status_invoice_to_dispatched', {
+      orderId: updatedOrder.orderId,
+      customerName: updatedOrder.customerName,
+      deliveryPartner: deliveryPartner,
+    }, {
+      assignedToId: updatedOrder.assignedToId,
+    }).catch(err => console.error('Error sending dispatch notification:', err));
 
     res.json({
       message: isPartialDelivery ? 'Order dispatched with partial delivery' : 'Order dispatched successfully',
@@ -728,13 +775,6 @@ router.post('/complete/:orderId', verifyToken, async (req, res) => {
       },
       { new: true }
     ).populate('statusUpdatedBy', 'name').populate('statusHistory.updatedBy', 'name');
-
-    // Emit WebSocket event for order update
-    emitOrderUpdated(updatedOrder, {
-      id: req.user.id,
-      name: req.user.name,
-      role: req.user.role
-    });
 
     res.json({
       message: 'Order completed successfully. Remaining stock has been deducted.',

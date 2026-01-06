@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const Product = require('../models/Product');
+const User = require('../models/User');
 const { verifyToken, canCreateProducts, canModifyProducts } = require('../middleware/auth');
-const { emitProductCreated, emitProductUpdated, emitProductDeleted } = require('../socket/events');
+const { sendNotificationWithRetry } = require('../services/notificationService');
 const multer = require('multer');
 const { parse } = require('csv-parse/sync');
 
@@ -39,12 +40,27 @@ router.post('/', verifyToken, canCreateProducts, async (req, res) => {
   try {
     const newProduct = await product.save();
     
-    // Emit WebSocket event for product creation
-    emitProductCreated(newProduct, {
-      id: req.user.id,
-      name: req.user.name,
-      role: req.user.role
-    });
+    // Check for low stock or out of stock on creation
+    if (newProduct.stockQuantity <= newProduct.lowStockThreshold) {
+      const notificationType = newProduct.stockQuantity === 0 
+        ? 'product_out_of_stock' 
+        : 'product_low_stock';
+      
+      sendNotificationWithRetry(notificationType, {
+        productId: newProduct._id.toString(),
+        productName: newProduct.name,
+        stockQuantity: newProduct.stockQuantity,
+        threshold: newProduct.lowStockThreshold,
+      }).catch(err => console.error('Error sending stock notification:', err));
+    }
+    
+    // Send push notification
+    const user = await User.findById(req.user.id);
+    sendNotificationWithRetry('product_created', {
+      productId: newProduct._id.toString(),
+      productName: newProduct.name,
+      createdBy: user?.name || 'User',
+    }).catch(err => console.error('Error sending product_created notification:', err));
     
     res.status(201).json(newProduct);
   } catch (err) {
@@ -61,12 +77,27 @@ router.put('/:id', verifyToken, canModifyProducts, async (req, res) => {
       { new: true }
     );
     
-    // Emit WebSocket event for product update
-    emitProductUpdated(updatedProduct, {
-      id: req.user.id,
-      name: req.user.name,
-      role: req.user.role
-    });
+    // Check for low stock or out of stock
+    if (updatedProduct.stockQuantity <= updatedProduct.lowStockThreshold) {
+      const notificationType = updatedProduct.stockQuantity === 0 
+        ? 'product_out_of_stock' 
+        : 'product_low_stock';
+      
+      sendNotificationWithRetry(notificationType, {
+        productId: updatedProduct._id.toString(),
+        productName: updatedProduct.name,
+        stockQuantity: updatedProduct.stockQuantity,
+        threshold: updatedProduct.lowStockThreshold,
+      }).catch(err => console.error('Error sending stock notification:', err));
+    }
+    
+    // Send product updated notification
+    const user = await User.findById(req.user.id);
+    sendNotificationWithRetry('product_updated', {
+      productId: updatedProduct._id.toString(),
+      productName: updatedProduct.name,
+      updatedBy: user?.name || 'User',
+    }).catch(err => console.error('Error sending product_updated notification:', err));
     
     res.json(updatedProduct);
   } catch (err) {
@@ -77,23 +108,21 @@ router.put('/:id', verifyToken, canModifyProducts, async (req, res) => {
 // Delete product - Admin or Inventory Manager
 router.delete('/:id', verifyToken, canModifyProducts, async (req, res) => {
   try {
-    // Get product details before deletion for WebSocket event
     const productToDelete = await Product.findById(req.params.id);
     
+    if (!productToDelete) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
     await Product.findByIdAndDelete(req.params.id);
     
-    // Emit WebSocket event for product deletion
-    if (productToDelete) {
-      emitProductDeleted(
-        productToDelete._id,
-        productToDelete.name,
-        {
-          id: req.user.id,
-          name: req.user.name,
-          role: req.user.role
-        }
-      );
-    }
+    // Send push notification
+    const user = await User.findById(req.user.id);
+    sendNotificationWithRetry('product_deleted', {
+      productId: productToDelete._id.toString(),
+      productName: productToDelete.name,
+      deletedBy: user?.name || 'User',
+    }).catch(err => console.error('Error sending product_deleted notification:', err));
     
     res.json({ message: 'Product deleted successfully' });
   } catch (err) {
@@ -194,19 +223,9 @@ router.post('/import', verifyToken, canCreateProducts, upload.single('file'), as
           existing.lowStockThreshold = lowStockThreshold;
           const updated = await existing.save();
           results.updated += 1;
-          emitProductUpdated(updated, {
-            id: req.user.id,
-            name: req.user.name,
-            role: req.user.role
-          });
         } else {
           const created = await Product.create({ name, brandName, dimension, stockQuantity, lowStockThreshold });
           results.created += 1;
-          emitProductCreated(created, {
-            id: req.user.id,
-            name: req.user.name,
-            role: req.user.role
-          });
         }
       } catch (rowErr) {
         results.errors.push({ row: index + 1, message: String(rowErr.message || rowErr) });
