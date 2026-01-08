@@ -7,13 +7,8 @@ const { verifyToken } = require('../middleware/auth');
 router.post('/register-token', verifyToken, async (req, res) => {
   try {
     const { pushToken } = req.body;
-    const userId = req.user.id;
-
-    console.log(`[Token Registration] Request from user ${userId}`);
-    console.log(`[Token Registration] Token received: ${pushToken ? pushToken.substring(0, 50) + '...' : 'NULL'}`);
 
     if (!pushToken) {
-      console.error(`[Token Registration] ERROR: No push token provided for user ${userId}`);
       return res.status(400).json({ 
         success: false, 
         message: 'Push token is required' 
@@ -21,36 +16,26 @@ router.post('/register-token', verifyToken, async (req, res) => {
     }
 
     // Validate Expo push token format (starts with ExponentPushToken or ExpoPushToken)
-    const isValidFormat = pushToken.startsWith('ExponentPushToken[') || pushToken.startsWith('ExpoPushToken[');
-    console.log(`[Token Registration] Token format valid: ${isValidFormat}`);
-    
-    if (!isValidFormat) {
-      console.error(`[Token Registration] ERROR: Invalid token format for user ${userId}`);
-      console.error(`[Token Registration] Token starts with: ${pushToken.substring(0, 30)}`);
+    if (!pushToken.startsWith('ExponentPushToken[') && !pushToken.startsWith('ExpoPushToken[')) {
       return res.status(400).json({ 
         success: false, 
-        message: `Invalid push token format. Expected ExponentPushToken[...] or ExpoPushToken[...], got: ${pushToken.substring(0, 30)}...` 
+        message: 'Invalid push token format' 
       });
     }
 
     // Update user's push token
-    console.log(`[Token Registration] Updating user ${userId} with push token...`);
     const user = await User.findByIdAndUpdate(
-      userId,
+      req.user.id,
       { pushToken: pushToken },
       { new: true }
     ).select('-password');
 
     if (!user) {
-      console.error(`[Token Registration] ERROR: User ${userId} not found`);
       return res.status(404).json({ 
         success: false, 
         message: 'User not found' 
       });
     }
-
-    console.log(`[Token Registration] SUCCESS: Token registered for user ${userId} (${user.name})`);
-    console.log(`[Token Registration] User has pushToken: ${!!user.pushToken}`);
 
     res.json({ 
       success: true, 
@@ -63,8 +48,7 @@ router.post('/register-token', verifyToken, async (req, res) => {
       }
     });
   } catch (err) {
-    console.error(`[Token Registration] ERROR: Exception occurred for user ${req.user?.id}:`, err);
-    console.error(`[Token Registration] Error stack:`, err.stack);
+    console.error('Error registering push token:', err);
     res.status(500).json({ 
       success: false, 
       message: 'Failed to register push token',
