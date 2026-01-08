@@ -3,10 +3,18 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const http = require('http');
 const User = require('./models/User');
+const { initializeFirebase } = require('./config/firebase');
 require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
+
+// Initialize Firebase Admin SDK for push notifications
+try {
+  initializeFirebase();
+} catch (error) {
+  console.error('Warning: Firebase initialization failed. Push notifications will not work:', error.message);
+}
 
 // Middleware
 app.use(cors({

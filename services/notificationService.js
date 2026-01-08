@@ -1,14 +1,11 @@
-const { Expo } = require('expo-server-sdk');
+const { getMessaging } = require('../config/firebase');
 const User = require('../models/User');
-
-// Create a new Expo SDK client
-const expo = new Expo();
 
 /**
  * Get recipients based on notification type and role
  * @param {string} notificationType - Type of notification
  * @param {Object} context - Context data (order, product, etc.)
- * @returns {Promise<Array>} Array of user IDs or user objects to notify
+ * @returns {Promise<Array>} Array of user IDs to notify
  */
 async function getRecipients(notificationType, context = {}) {
   const recipients = [];
@@ -46,15 +43,6 @@ async function getRecipients(notificationType, context = {}) {
           pushToken: { $ne: null },
         }).select('_id');
         recipients.push(...statusUpdateUsers.map(u => u._id));
-        break;
-
-      case 'order_status_dc_to_invoice':
-        // Also notify Inventory Manager for stock check
-        const inventoryUsers = await User.find({
-          role: 'Inventory Manager',
-          pushToken: { $ne: null },
-        }).select('_id');
-        recipients.push(...inventoryUsers.map(u => u._id));
         break;
 
       case 'order_reassigned':
@@ -136,235 +124,369 @@ async function getRecipients(notificationType, context = {}) {
 }
 
 /**
- * Format notification payload based on type
+ * Format notification payload for FCM
  * @param {string} notificationType - Type of notification
  * @param {Object} data - Notification data
- * @returns {Object} Formatted notification payload
+ * @returns {Object} Formatted FCM notification payload
  */
 function formatNotificationPayload(notificationType, data) {
-  const basePayload = {
-    sound: 'default',
-    priority: 'default',
-    data: {
-      type: notificationType,
-      timestamp: Date.now(),
-    },
+  const baseData = {
+    type: notificationType,
+    timestamp: String(Date.now()),
   };
 
   switch (notificationType) {
     case 'order_assigned_to_me':
       return {
-        ...basePayload,
-        title: 'New Order Assigned',
-        body: `Order ${data.orderId} (${data.customerName}) has been assigned to you`,
-        priority: 'high',
+        notification: {
+          title: 'New Order Assigned',
+          body: `Order ${data.orderId} (${data.customerName}) has been assigned to you`,
+        },
         data: {
-          ...basePayload.data,
-          orderId: data.orderId,
+          ...baseData,
+          orderId: String(data.orderId || ''),
           deepLink: '/orders/my-orders',
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'order_created':
       return {
-        ...basePayload,
-        title: 'Order Created',
-        body: `Order ${data.orderId} (${data.customerName}) was created by ${data.createdBy}`,
+        notification: {
+          title: 'Order Created',
+          body: `Order ${data.orderId} (${data.customerName}) was created by ${data.createdBy}`,
+        },
         data: {
-          ...basePayload.data,
-          orderId: data.orderId,
+          ...baseData,
+          orderId: String(data.orderId || ''),
           deepLink: '/orders',
+        },
+        android: {
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'order_status_pending_to_dc':
       return {
-        ...basePayload,
-        title: 'Order Status Updated',
-        body: `Order ${data.orderId} moved to DC status`,
-        priority: 'high',
+        notification: {
+          title: 'Order Status Updated',
+          body: `Order ${data.orderId} moved to DC status`,
+        },
         data: {
-          ...basePayload.data,
-          orderId: data.orderId,
+          ...baseData,
+          orderId: String(data.orderId || ''),
           deepLink: data.assignedToId ? '/orders/my-orders' : '/orders',
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'order_status_dc_to_invoice':
       return {
-        ...basePayload,
-        title: 'Order Ready for Dispatch',
-        body: `Order ${data.orderId} is ready for dispatch`,
-        priority: 'high',
+        notification: {
+          title: 'Order Ready for Dispatch',
+          body: `Order ${data.orderId} is ready for dispatch`,
+        },
         data: {
-          ...basePayload.data,
-          orderId: data.orderId,
+          ...baseData,
+          orderId: String(data.orderId || ''),
           deepLink: '/orders',
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'order_status_invoice_to_dispatched':
       return {
-        ...basePayload,
-        title: 'Order Dispatched',
-        body: `Order ${data.orderId} has been dispatched via ${data.deliveryPartner || 'delivery partner'}`,
-        priority: 'high',
+        notification: {
+          title: 'Order Dispatched',
+          body: `Order ${data.orderId} has been dispatched via ${data.deliveryPartner || 'delivery partner'}`,
+        },
         data: {
-          ...basePayload.data,
-          orderId: data.orderId,
+          ...baseData,
+          orderId: String(data.orderId || ''),
           deepLink: data.assignedToId ? '/orders/my-orders' : '/orders',
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'order_status_updated':
       return {
-        ...basePayload,
-        title: 'Order Status Updated',
-        body: `Order ${data.orderId} status changed to ${data.newStatus}`,
+        notification: {
+          title: 'Order Status Updated',
+          body: `Order ${data.orderId} status changed to ${data.newStatus}`,
+        },
         data: {
-          ...basePayload.data,
-          orderId: data.orderId,
+          ...baseData,
+          orderId: String(data.orderId || ''),
           deepLink: data.assignedToId ? '/orders/my-orders' : '/orders',
+        },
+        android: {
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'order_reassigned':
       return {
-        ...basePayload,
-        title: 'Order Reassigned',
-        body: `Order ${data.orderId} has been reassigned to ${data.newAssignee}`,
-        priority: 'high',
+        notification: {
+          title: 'Order Reassigned',
+          body: `Order ${data.orderId} has been reassigned to ${data.newAssignee}`,
+        },
         data: {
-          ...basePayload.data,
-          orderId: data.orderId,
+          ...baseData,
+          orderId: String(data.orderId || ''),
           deepLink: '/orders/my-orders',
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'order_deleted':
       return {
-        ...basePayload,
-        title: 'Order Deleted',
-        body: `Order ${data.orderId} was deleted by ${data.deletedBy}`,
-        priority: 'high',
+        notification: {
+          title: 'Order Deleted',
+          body: `Order ${data.orderId} was deleted by ${data.deletedBy}`,
+        },
         data: {
-          ...basePayload.data,
-          orderId: data.orderId,
+          ...baseData,
+          orderId: String(data.orderId || ''),
           deepLink: '/orders',
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'product_low_stock':
       return {
-        ...basePayload,
-        title: 'Low Stock Alert',
-        body: `${data.productName} is running low (Stock: ${data.stockQuantity}, Threshold: ${data.threshold})`,
-        priority: 'high',
+        notification: {
+          title: 'Low Stock Alert',
+          body: `${data.productName} is running low (Stock: ${data.stockQuantity}, Threshold: ${data.threshold})`,
+        },
         data: {
-          ...basePayload.data,
-          productId: data.productId,
+          ...baseData,
+          productId: String(data.productId || ''),
           deepLink: '/products',
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'product_out_of_stock':
       return {
-        ...basePayload,
-        title: 'Out of Stock',
-        body: `${data.productName} is out of stock`,
-        priority: 'high',
+        notification: {
+          title: 'Out of Stock',
+          body: `${data.productName} is out of stock`,
+        },
         data: {
-          ...basePayload.data,
-          productId: data.productId,
+          ...baseData,
+          productId: String(data.productId || ''),
           deepLink: '/products',
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'product_created':
       return {
-        ...basePayload,
-        title: 'Product Created',
-        body: `${data.productName} was added by ${data.createdBy}`,
+        notification: {
+          title: 'Product Created',
+          body: `${data.productName} was added by ${data.createdBy}`,
+        },
         data: {
-          ...basePayload.data,
-          productId: data.productId,
+          ...baseData,
+          productId: String(data.productId || ''),
           deepLink: '/products',
+        },
+        android: {
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'product_updated':
       return {
-        ...basePayload,
-        title: 'Product Updated',
-        body: `${data.productName} was updated by ${data.updatedBy}`,
+        notification: {
+          title: 'Product Updated',
+          body: `${data.productName} was updated by ${data.updatedBy}`,
+        },
         data: {
-          ...basePayload.data,
-          productId: data.productId,
+          ...baseData,
+          productId: String(data.productId || ''),
           deepLink: '/products',
+        },
+        android: {
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'product_deleted':
       return {
-        ...basePayload,
-        title: 'Product Deleted',
-        body: `${data.productName} was deleted by ${data.deletedBy}`,
+        notification: {
+          title: 'Product Deleted',
+          body: `${data.productName} was deleted by ${data.deletedBy}`,
+        },
         data: {
-          ...basePayload.data,
-          productId: data.productId,
+          ...baseData,
+          productId: String(data.productId || ''),
           deepLink: '/products',
+        },
+        android: {
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'staff_created':
       return {
-        ...basePayload,
-        title: 'Staff Created',
-        body: `${data.staffName} (${data.role}) was added`,
+        notification: {
+          title: 'Staff Created',
+          body: `${data.staffName} (${data.role}) was added`,
+        },
         data: {
-          ...basePayload.data,
-          staffId: data.staffId,
+          ...baseData,
+          staffId: String(data.staffId || ''),
           deepLink: '/staff',
+        },
+        android: {
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'staff_updated':
       return {
-        ...basePayload,
-        title: 'Staff Updated',
-        body: `${data.staffName} was updated`,
+        notification: {
+          title: 'Staff Updated',
+          body: `${data.staffName} was updated`,
+        },
         data: {
-          ...basePayload.data,
-          staffId: data.staffId,
+          ...baseData,
+          staffId: String(data.staffId || ''),
           deepLink: '/staff',
+        },
+        android: {
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     case 'staff_deleted':
       return {
-        ...basePayload,
-        title: 'Staff Deleted',
-        body: `${data.staffName} was removed`,
+        notification: {
+          title: 'Staff Deleted',
+          body: `${data.staffName} was removed`,
+        },
         data: {
-          ...basePayload.data,
-          staffId: data.staffId,
+          ...baseData,
+          staffId: String(data.staffId || ''),
           deepLink: '/staff',
+        },
+        android: {
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
+        },
+      };
+
+    case 'test':
+      return {
+        notification: {
+          title: data.title || 'Test Notification 🎉',
+          body: data.body || 'This is a test notification from Sarathi.',
+        },
+        data: {
+          ...baseData,
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
         },
       };
 
     default:
       return {
-        ...basePayload,
-        title: 'Notification',
-        body: 'You have a new notification',
+        notification: {
+          title: 'Notification',
+          body: 'You have a new notification',
+        },
+        data: baseData,
+        android: {
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
+        },
       };
   }
 }
 
 /**
- * Send push notification to a single user
+ * Send push notification to a single user via FCM
  * @param {string} userId - User ID
- * @param {Object} payload - Notification payload
+ * @param {Object} payload - FCM notification payload
  * @returns {Promise<boolean>} Success status
  */
 async function sendToUser(userId, payload) {
@@ -374,45 +496,32 @@ async function sendToUser(userId, payload) {
       return false;
     }
 
-    // Check if token is valid Expo token
-    if (!Expo.isExpoPushToken(user.pushToken)) {
-      console.warn(`Invalid Expo push token for user ${userId}`);
-      // Optionally clear invalid token
-      await User.findByIdAndUpdate(userId, { pushToken: null });
+    const messaging = getMessaging();
+    
+    // Build FCM message
+    const message = {
+      token: user.pushToken,
+      ...payload,
+    };
+
+    try {
+      const response = await messaging.send(message);
+      console.log(`Notification sent to user ${userId}:`, response);
+      return true;
+    } catch (error) {
+      console.error(`Error sending notification to user ${userId}:`, error.message);
+      
+      // If token is invalid, clear it from database
+      if (
+        error.code === 'messaging/invalid-registration-token' ||
+        error.code === 'messaging/registration-token-not-registered'
+      ) {
+        console.log(`Clearing invalid token for user ${userId}`);
+        await User.findByIdAndUpdate(userId, { pushToken: null });
+      }
+      
       return false;
     }
-
-    const messages = [{
-      to: user.pushToken,
-      ...payload,
-    }];
-
-    const chunks = expo.chunkPushNotifications(messages);
-    const tickets = [];
-
-    for (const chunk of chunks) {
-      try {
-        const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
-        tickets.push(...ticketChunk);
-      } catch (error) {
-        console.error('Error sending push notifications chunk:', error);
-      }
-    }
-
-    // Check for errors in tickets
-    for (let i = 0; i < tickets.length; i++) {
-      const ticket = tickets[i];
-      if (ticket.status === 'error') {
-        console.error(`Error sending notification to user ${userId}:`, ticket.message);
-        // If token is invalid, clear it
-        if (ticket.details && ticket.details.error === 'DeviceNotRegistered') {
-          await User.findByIdAndUpdate(userId, { pushToken: null });
-        }
-        return false;
-      }
-    }
-
-    return true;
   } catch (error) {
     console.error(`Error sending notification to user ${userId}:`, error);
     return false;
@@ -496,4 +605,3 @@ module.exports = {
   getRecipients,
   formatNotificationPayload,
 };
-

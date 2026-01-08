@@ -21,6 +21,10 @@ coverage/
 .env
 .env.*.local
 
+# Firebase service account key (sensitive!)
+firebase-service-account.json
+*-firebase-adminsdk-*.json
+
 # Optional npm cache directory
 .npm
 
