@@ -28,7 +28,6 @@ async function getRecipients(notificationType, context = {}) {
         const orderCreatedUsers = await User.find({
           role: { $in: ['Admin', 'Staff', 'Inventory Manager'] },
           pushToken: { $ne: null },
-          'notificationPreferences.orderNotifications': true,
         }).select('_id');
         recipients.push(...orderCreatedUsers.map(u => u._id));
         break;
@@ -45,7 +44,6 @@ async function getRecipients(notificationType, context = {}) {
           role: { $in: ['Admin', 'Staff'] },
           _id: { $ne: context.assignedToId }, // Don't duplicate assigned user
           pushToken: { $ne: null },
-          'notificationPreferences.orderNotifications': true,
         }).select('_id');
         recipients.push(...statusUpdateUsers.map(u => u._id));
         break;
@@ -55,7 +53,6 @@ async function getRecipients(notificationType, context = {}) {
         const inventoryUsers = await User.find({
           role: 'Inventory Manager',
           pushToken: { $ne: null },
-          'notificationPreferences.orderNotifications': true,
         }).select('_id');
         recipients.push(...inventoryUsers.map(u => u._id));
         break;
@@ -72,7 +69,6 @@ async function getRecipients(notificationType, context = {}) {
           role: 'Admin',
           _id: { $nin: [context.newAssignedToId, context.previousAssignedToId].filter(Boolean) },
           pushToken: { $ne: null },
-          'notificationPreferences.orderNotifications': true,
         }).select('_id');
         recipients.push(...adminUsers.map(u => u._id));
         break;
@@ -89,7 +85,6 @@ async function getRecipients(notificationType, context = {}) {
           role: 'Admin',
           _id: { $nin: [context.assignedToId, context.createdById].filter(Boolean) },
           pushToken: { $ne: null },
-          'notificationPreferences.orderNotifications': true,
         }).select('_id');
         recipients.push(...deleteAdminUsers.map(u => u._id));
         break;
@@ -101,7 +96,6 @@ async function getRecipients(notificationType, context = {}) {
         const inventoryNotificationUsers = await User.find({
           role: { $in: ['Admin', 'Inventory Manager'] },
           pushToken: { $ne: null },
-          'notificationPreferences.inventoryNotifications': true,
         }).select('_id');
         recipients.push(...inventoryNotificationUsers.map(u => u._id));
         break;
@@ -109,11 +103,10 @@ async function getRecipients(notificationType, context = {}) {
       case 'product_created':
       case 'product_updated':
       case 'product_deleted':
-        // Notify Admin, Staff, and Inventory Manager
+        // Notify Admin and Inventory Manager only
         const productUsers = await User.find({
-          role: { $in: ['Admin', 'Staff', 'Inventory Manager'] },
+          role: { $in: ['Admin', 'Inventory Manager'] },
           pushToken: { $ne: null },
-          'notificationPreferences.inventoryNotifications': true,
         }).select('_id');
         recipients.push(...productUsers.map(u => u._id));
         break;
@@ -126,7 +119,6 @@ async function getRecipients(notificationType, context = {}) {
         const staffUsers = await User.find({
           role: 'Admin',
           pushToken: { $ne: null },
-          'notificationPreferences.staffNotifications': true,
         }).select('_id');
         recipients.push(...staffUsers.map(u => u._id));
         break;

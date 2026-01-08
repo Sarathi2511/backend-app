@@ -7,8 +7,13 @@ const { verifyToken } = require('../middleware/auth');
 router.post('/register-token', verifyToken, async (req, res) => {
   try {
     const { pushToken } = req.body;
+    const userId = req.user.id;
+
+    console.log(`[Token Registration] Request from user ${userId}`);
+    console.log(`[Token Registration] Token received: ${pushToken ? pushToken.substring(0, 50) + '...' : 'NULL'}`);
 
     if (!pushToken) {
+      console.error(`[Token Registration] ERROR: No push token provided for user ${userId}`);
       return res.status(400).json({ 
         success: false, 
         message: 'Push token is required' 
@@ -16,26 +21,36 @@ router.post('/register-token', verifyToken, async (req, res) => {
     }
 
     // Validate Expo push token format (starts with ExponentPushToken or ExpoPushToken)
-    if (!pushToken.startsWith('ExponentPushToken[') && !pushToken.startsWith('ExpoPushToken[')) {
+    const isValidFormat = pushToken.startsWith('ExponentPushToken[') || pushToken.startsWith('ExpoPushToken[');
+    console.log(`[Token Registration] Token format valid: ${isValidFormat}`);
+    
+    if (!isValidFormat) {
+      console.error(`[Token Registration] ERROR: Invalid token format for user ${userId}`);
+      console.error(`[Token Registration] Token starts with: ${pushToken.substring(0, 30)}`);
       return res.status(400).json({ 
         success: false, 
-        message: 'Invalid push token format' 
+        message: `Invalid push token format. Expected ExponentPushToken[...] or ExpoPushToken[...], got: ${pushToken.substring(0, 30)}...` 
       });
     }
 
     // Update user's push token
+    console.log(`[Token Registration] Updating user ${userId} with push token...`);
     const user = await User.findByIdAndUpdate(
-      req.user.id,
+      userId,
       { pushToken: pushToken },
       { new: true }
     ).select('-password');
 
     if (!user) {
+      console.error(`[Token Registration] ERROR: User ${userId} not found`);
       return res.status(404).json({ 
         success: false, 
         message: 'User not found' 
       });
     }
+
+    console.log(`[Token Registration] SUCCESS: Token registered for user ${userId} (${user.name})`);
+    console.log(`[Token Registration] User has pushToken: ${!!user.pushToken}`);
 
     res.json({ 
       success: true, 
@@ -48,7 +63,8 @@ router.post('/register-token', verifyToken, async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('Error registering push token:', err);
+    console.error(`[Token Registration] ERROR: Exception occurred for user ${req.user?.id}:`, err);
+    console.error(`[Token Registration] Error stack:`, err.stack);
     res.status(500).json({ 
       success: false, 
       message: 'Failed to register push token',
@@ -82,92 +98,6 @@ router.delete('/unregister-token', verifyToken, async (req, res) => {
     res.status(500).json({ 
       success: false, 
       message: 'Failed to unregister push token',
-      error: err.message 
-    });
-  }
-});
-
-// Get current user's notification preferences
-router.get('/preferences', verifyToken, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id).select('notificationPreferences pushToken');
-
-    if (!user) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'User not found' 
-      });
-    }
-
-    res.json({ 
-      success: true, 
-      preferences: user.notificationPreferences || {
-        orderNotifications: true,
-        inventoryNotifications: true,
-        staffNotifications: true,
-        systemNotifications: true,
-      },
-      hasPushToken: !!user.pushToken
-    });
-  } catch (err) {
-    console.error('Error fetching notification preferences:', err);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to fetch notification preferences',
-      error: err.message 
-    });
-  }
-});
-
-// Update notification preferences
-router.put('/preferences', verifyToken, async (req, res) => {
-  try {
-    const { orderNotifications, inventoryNotifications, staffNotifications, systemNotifications } = req.body;
-
-    const updateData = {};
-    if (typeof orderNotifications === 'boolean') {
-      updateData['notificationPreferences.orderNotifications'] = orderNotifications;
-    }
-    if (typeof inventoryNotifications === 'boolean') {
-      updateData['notificationPreferences.inventoryNotifications'] = inventoryNotifications;
-    }
-    if (typeof staffNotifications === 'boolean') {
-      updateData['notificationPreferences.staffNotifications'] = staffNotifications;
-    }
-    if (typeof systemNotifications === 'boolean') {
-      updateData['notificationPreferences.systemNotifications'] = systemNotifications;
-    }
-
-    if (Object.keys(updateData).length === 0) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'No valid preferences provided' 
-      });
-    }
-
-    const user = await User.findByIdAndUpdate(
-      req.user.id,
-      { $set: updateData },
-      { new: true }
-    ).select('notificationPreferences');
-
-    if (!user) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'User not found' 
-      });
-    }
-
-    res.json({ 
-      success: true, 
-      message: 'Notification preferences updated successfully',
-      preferences: user.notificationPreferences 
-    });
-  } catch (err) {
-    console.error('Error updating notification preferences:', err);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to update notification preferences',
       error: err.message 
     });
   }
