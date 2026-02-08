@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Product = require('../models/Product');
 const User = require('../models/User');
-const { verifyToken, canCreateProducts, canModifyProducts } = require('../middleware/auth');
+const { verifyToken, canCreateProducts, canUpdateProducts, canDeleteProducts, canImportProducts } = require('../middleware/auth');
 const { sendNotificationWithRetry } = require('../services/notificationService');
 const multer = require('multer');
 const { parse } = require('csv-parse/sync');
@@ -34,7 +34,7 @@ router.get('/brands', verifyToken, async (req, res) => {
   }
 });
 
-// Create new product - Admin, Staff, Executive, and Inventory Manager can create
+// Create new product - Admin, Staff, and Executive can create
 router.post('/', verifyToken, canCreateProducts, async (req, res) => {
   const product = new Product(req.body);
   try {
@@ -69,7 +69,7 @@ router.post('/', verifyToken, canCreateProducts, async (req, res) => {
 });
 
 // Update product - Admin, Staff, and Inventory Manager
-router.put('/:id', verifyToken, canModifyProducts, async (req, res) => {
+router.put('/:id', verifyToken, canUpdateProducts, async (req, res) => {
   try {
     const updatedProduct = await Product.findByIdAndUpdate(
       req.params.id,
@@ -105,8 +105,8 @@ router.put('/:id', verifyToken, canModifyProducts, async (req, res) => {
   }
 });
 
-// Delete product - Admin or Inventory Manager
-router.delete('/:id', verifyToken, canModifyProducts, async (req, res) => {
+// Delete product - Admin or Staff
+router.delete('/:id', verifyToken, canDeleteProducts, async (req, res) => {
   try {
     const productToDelete = await Product.findById(req.params.id);
     
@@ -130,8 +130,8 @@ router.delete('/:id', verifyToken, canModifyProducts, async (req, res) => {
   }
 });
 
-// CSV Import Route - Admin, Staff, Executive, and Inventory Manager can import (same as create)
-router.post('/import', verifyToken, canCreateProducts, upload.single('file'), async (req, res) => {
+// CSV Import Route - Admin and Inventory Manager can import
+router.post('/import', verifyToken, canImportProducts, upload.single('file'), async (req, res) => {
   try {
     if (!req.file || !req.file.buffer) {
       return res.status(400).json({ message: 'CSV file is required' });

@@ -78,12 +78,12 @@ const canModifyOrders = async (req, res, next) => {
   }
 };
 
-// Middleware to check if user can create products (Admin or Inventory Manager)
+// Middleware to check if user can create products (Admin, Staff, or Executive)
 const canCreateProducts = async (req, res, next) => {
   try {
     const user = await User.findById(req.user.id);
     
-    if (!user || !['Admin', 'Inventory Manager'].includes(user.role)) {
+    if (!user || !['Admin', 'Staff', 'Executive'].includes(user.role)) {
       return res.status(403).json({ success: false, message: 'Access denied. Cannot create products with current role.' });
     }
     
@@ -93,13 +93,43 @@ const canCreateProducts = async (req, res, next) => {
   }
 };
 
-// Middleware to check if user can modify products (Admin or Inventory Manager)
-const canModifyProducts = async (req, res, next) => {
+// Middleware to check if user can update products (Admin, Staff, or Inventory Manager)
+const canUpdateProducts = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user.id);
+    
+    if (!user || !['Admin', 'Staff', 'Inventory Manager'].includes(user.role)) {
+      return res.status(403).json({ success: false, message: 'Access denied. Cannot update products with current role.' });
+    }
+    
+    next();
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// Middleware to check if user can delete products (Admin or Staff)
+const canDeleteProducts = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user.id);
+    
+    if (!user || !['Admin', 'Staff'].includes(user.role)) {
+      return res.status(403).json({ success: false, message: 'Access denied. Cannot delete products with current role.' });
+    }
+    
+    next();
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// Middleware to check if user can import products via CSV (Admin or Inventory Manager)
+const canImportProducts = async (req, res, next) => {
   try {
     const user = await User.findById(req.user.id);
     
     if (!user || !['Admin', 'Inventory Manager'].includes(user.role)) {
-      return res.status(403).json({ success: false, message: 'Access denied. Cannot modify products with current role.' });
+      return res.status(403).json({ success: false, message: 'Access denied. Cannot import products with current role.' });
     }
     
     next();
@@ -115,5 +145,7 @@ module.exports = {
   canCreateOrders,
   canModifyOrders,
   canCreateProducts,
-  canModifyProducts
+  canUpdateProducts,
+  canDeleteProducts,
+  canImportProducts
 }; 

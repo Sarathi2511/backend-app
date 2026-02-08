@@ -1,10 +1,12 @@
+// Load environment variables first, before any other imports
+require('dotenv').config();
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const http = require('http');
 const User = require('./models/User');
 const { initializeFirebase } = require('./config/firebase');
-require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
